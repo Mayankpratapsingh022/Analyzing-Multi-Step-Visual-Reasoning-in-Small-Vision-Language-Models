@@ -1,0 +1,19 @@
+# Baseline evaluation: large / reference models on VCR
+experiment_name: baseline_large_vcr
+dataset: vcr
+vcr_dir: data/vcr
+subset_pct: 5          # Use small subset first; null for full val
+seed: 42
+device: cuda
+output_dir: results
+csv_path: results/baselines.csv
+
+models:
+  - name: llava-1.5-13b
+    quantization: 8bit
+  - name: internvl2-26b
+    quantization: 4bit
+  - name: llava-1.6-34b
+    quantization: 4bit
+  - name: gpt-4o             # Uses API, subset recommended (cost)
+  - name: claude              # Uses API, subset recommended (cost)

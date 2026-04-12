@@ -1,0 +1,14 @@
+# Baseline evaluation on MathVista benchmark
+experiment_name: baseline_mathvista
+dataset: mathvista
+subset_pct: null       # testmini is ~1000 examples, run full
+seed: 42
+device: cuda
+output_dir: results
+csv_path: results/baselines_mathvista.csv
+
+models:
+  - name: qwen2-vl-7b
+  - name: internvl2-8b
+  - name: llava-1.6-34b
+    quantization: 4bit

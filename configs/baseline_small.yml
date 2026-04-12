@@ -1,0 +1,18 @@
+# Baseline evaluation: all small models (1B-8B) on VCR
+experiment_name: baseline_small_vcr
+dataset: vcr
+vcr_dir: data/vcr
+subset_pct: 5          # Start with 5% for fast iteration; set to null for full val
+seed: 42
+device: cuda
+output_dir: results
+csv_path: results/baselines.csv
+
+models:
+  - name: moondream2
+  - name: qwen2-vl-2b
+  - name: internvl2-2b
+  - name: phi3-vision
+  - name: qwen2-vl-7b
+  - name: llava-next-7b
+  - name: internvl2-8b

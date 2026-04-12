@@ -1,0 +1,14 @@
+# Baseline evaluation on MMMU benchmark
+experiment_name: baseline_mmmu
+dataset: mmmu
+subset_pct: 10         # MMMU val is ~900 examples, 10% = ~90
+seed: 42
+device: cuda
+output_dir: results
+csv_path: results/baselines_mmmu.csv
+
+models:
+  - name: qwen2-vl-7b        # Best small model candidate
+  - name: internvl2-8b       # Best small model candidate
+  - name: llava-1.6-34b      # Large reference
+    quantization: 4bit

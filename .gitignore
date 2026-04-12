@@ -1,0 +1,43 @@
+# Data
+data/vcr/
+data/mmmu/
+data/mathvista/
+data/gqa/
+
+# Model weights / caches
+*.bin
+*.safetensors
+*.gguf
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+*.env
+
+# Experiment tracking
+wandb/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Results (keep CSV/JSON, ignore large temp files)
+results/**/*.tmp
+results/**/*.pkl
+
+# Jupyter
+.ipynb_checkpoints/

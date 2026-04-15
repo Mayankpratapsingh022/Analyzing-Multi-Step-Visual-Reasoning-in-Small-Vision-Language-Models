@@ -21,7 +21,7 @@ class Qwen2VLBase(VLMEvaluator):
         self.processor = AutoProcessor.from_pretrained(self.HF_ID)
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.HF_ID,
-            torch_dtype=dtype,
+            dtype=dtype,
             device_map=device if quantization else None,
             quantization_config=self.get_quantization_config(quantization),
         )

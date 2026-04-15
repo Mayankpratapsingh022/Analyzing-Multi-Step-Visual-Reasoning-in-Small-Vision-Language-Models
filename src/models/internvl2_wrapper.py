@@ -23,7 +23,7 @@ class InternVL2Base(VLMEvaluator):
         dtype = torch.float16 if "cuda" in device else torch.float32
 
         load_kwargs = {
-            "torch_dtype": dtype,
+            "dtype": dtype,
             "trust_remote_code": True,
             "low_cpu_mem_usage": True,
         }

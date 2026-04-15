@@ -26,7 +26,7 @@ class Phi3VisionEvaluator(VLMEvaluator):
         )
 
         load_kwargs = {
-            "torch_dtype": dtype,
+            "dtype": dtype,
             "trust_remote_code": True,
             "_attn_implementation": "eager",  # fallback if flash-attn missing
         }

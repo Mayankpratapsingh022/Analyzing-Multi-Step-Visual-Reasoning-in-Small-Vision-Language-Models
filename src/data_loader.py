@@ -199,7 +199,11 @@ class MMMUDataset(Dataset):
             "images": images,
             "question": row["question"],
             "answer_choices": choices,
-            "answer_label": ord(row["answer"]) - ord("A") if row.get("answer") else -1,
+            "answer_label": (
+                ord(row["answer"].upper()) - ord("A")
+                if row.get("answer") and len(row["answer"]) == 1 and row["answer"].upper() in "ABCDE"
+                else -1
+            ),
             "metadata": {
                 "id": row.get("id", idx),
                 "subject": row.get("subject", ""),

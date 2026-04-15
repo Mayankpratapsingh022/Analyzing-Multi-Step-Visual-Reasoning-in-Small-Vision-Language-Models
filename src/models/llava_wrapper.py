@@ -22,7 +22,7 @@ class LLaVABase(VLMEvaluator):
         self.processor = AutoProcessor.from_pretrained(self.HF_ID)
 
         load_kwargs = {
-            "torch_dtype": dtype,
+            "dtype": dtype,
             "low_cpu_mem_usage": True,
         }
 

@@ -1,14 +1,30 @@
-# Baseline evaluation on MMMU benchmark
-experiment_name: baseline_mmmu
+# Baseline evaluation on MMMU benchmark — Math subject
+experiment_name: baseline_mmmu_math
 dataset: mmmu
-subset_pct: 10         # MMMU val is ~900 examples, 10% = ~90
+
+# --- Subject selection (MMMU-specific) ---
+# Loads the "Math" config from HuggingFace (MMMU/MMMU, "Math").
+# Remove or set to null to load all subjects (~900 validation examples).
+subject: Math           # ~540 examples in validation split
+
+# --- Sample size ---
+# max_samples: exact number of examples to evaluate.
+#   Takes priority over subset_pct when both are set.
+# subset_pct: percentage of the (post-subject-filter) split to sample.
+#   Set both to null to run the full subject.
+max_samples: 100        # quick baseline; set to null for full subject
+subset_pct: null
+
 seed: 42
 device: cuda
 output_dir: results
 csv_path: results/baselines_mmmu.csv
 
 models:
-  - name: qwen2-vl-7b        # Best small model candidate
-  - name: internvl2-8b       # Best small model candidate
-  - name: llava-1.6-34b      # Large reference
-    quantization: 4bit
+  - name: moondream2
+  - name: qwen2-vl-2b
+  - name: internvl2-2b
+  - name: phi3-vision
+  - name: qwen2-vl-7b
+  - name: llava-next-7b
+  - name: internvl2-8b

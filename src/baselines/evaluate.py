@@ -33,6 +33,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import torch
 import yaml
@@ -95,8 +96,10 @@ def run_single_evaluation(
     model_name: str,
     dataset_name: str,
     vcr_dir: str = "data/vcr",
-    subset_pct: float = None,
-    quantization: str = None,
+    subset_pct: Optional[float] = None,
+    max_samples: Optional[int] = None,
+    subject: Optional[str] = None,
+    quantization: Optional[str] = None,
     seed: int = 42,
     device: str = "cuda",
     output_dir: str = "results",
@@ -108,8 +111,22 @@ def run_single_evaluation(
     If a checkpoint exists for this model+dataset+seed, resumes from it.
     Pass restart=True to ignore the checkpoint and start fresh.
     batch_size=0 auto-detects from VRAM, 1=sequential.
+
+    Args:
+        max_samples: Exact number of examples to evaluate. Takes priority over
+                     subset_pct when both are set.
+        subject: MMMU only — subject config name to load (e.g. "Math").
+                 Ignored for other datasets.
     """
     run_id = f"{model_name}_{dataset_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    # Build a human-readable sample description for the log header
+    if max_samples is not None:
+        sample_desc = f"{max_samples} samples"
+    elif subset_pct is not None:
+        sample_desc = f"{subset_pct}%"
+    else:
+        sample_desc = "full"
 
     log.info("")
     log.info(f"{'#'*70}")
@@ -117,8 +134,8 @@ def run_single_evaluation(
     log.info(f"{'#'*70}")
     log.info(f"  Run ID       : {run_id}")
     log.info(f"  Model        : {model_name}")
-    log.info(f"  Dataset      : {dataset_name}")
-    log.info(f"  Subset       : {subset_pct}%" if subset_pct else "  Subset       : full")
+    log.info(f"  Dataset      : {dataset_name}" + (f" ({subject})" if subject else ""))
+    log.info(f"  Samples      : {sample_desc}")
     log.info(f"  Quantization : {quantization or 'none'}")
     log.info(f"  Seed         : {seed}")
     log.info(f"  Device       : {device}")
@@ -152,9 +169,11 @@ def run_single_evaluation(
             subset_pct=subset_pct, seed=seed,
         )
     elif dataset_name in ("mmmu", "mathvista"):
-        ds_kwargs = {"subset_pct": subset_pct, "seed": seed}
+        ds_kwargs = {"subset_pct": subset_pct, "max_samples": max_samples, "seed": seed}
         if dataset_name == "mmmu":
             ds_kwargs["split"] = "validation"
+            if subject:
+                ds_kwargs["subject"] = subject
         else:
             ds_kwargs["split"] = "testmini"
         dataset = get_dataset(dataset_name, **ds_kwargs)
@@ -275,6 +294,8 @@ def run_sweep(
                 dataset_name=dataset_name,
                 vcr_dir=kwargs.get("vcr_dir", "data/vcr"),
                 subset_pct=kwargs.get("subset_pct"),
+                max_samples=kwargs.get("max_samples"),
+                subject=kwargs.get("subject"),
                 quantization=quant,
                 seed=kwargs.get("seed", 42),
                 device=device,
@@ -333,6 +354,10 @@ def main():
                         choices=["vcr", "mmmu", "mathvista"])
     parser.add_argument("--vcr_dir", type=str, default="data/vcr")
     parser.add_argument("--subset_pct", type=float, default=None)
+    parser.add_argument("--max_samples", type=int, default=None,
+                        help="Exact number of examples to evaluate (overrides --subset_pct)")
+    parser.add_argument("--subject", type=str, default=None,
+                        help="MMMU only: subject config to load, e.g. 'Math'")
     parser.add_argument("--quantization", type=str, default=None,
                         choices=[None, "4bit", "8bit"])
     parser.add_argument("--seed", type=int, default=42)
@@ -384,6 +409,8 @@ def main():
             dataset_name=args.dataset,
             vcr_dir=args.vcr_dir,
             subset_pct=args.subset_pct,
+            max_samples=args.max_samples,
+            subject=args.subject,
             quantization=args.quantization,
             seed=args.seed,
             device=args.device,
@@ -398,6 +425,8 @@ def main():
             dataset_name=args.dataset,
             vcr_dir=args.vcr_dir,
             subset_pct=args.subset_pct,
+            max_samples=args.max_samples,
+            subject=args.subject,
             quantization=args.quantization,
             seed=args.seed,
             device=args.device,

@@ -138,18 +138,36 @@ class MMMUDataset(Dataset):
     """
     MMMU dataset via HuggingFace datasets.
     Massive Multi-discipline Multimodal Understanding benchmark.
+
+    Args:
+        subject: HuggingFace config name for a specific subject, e.g. "Math",
+                 "Physics", "Chemistry". Pass None (default) to load all subjects.
+                 Full list: https://huggingface.co/datasets/MMMU/MMMU
+        max_samples: Exact number of examples to use. Takes priority over
+                     subset_pct when both are provided.
+        subset_pct: Percentage of examples to sample (0-100). Used only when
+                    max_samples is None.
     """
 
     def __init__(
         self,
         split: str = "validation",
+        subject: Optional[str] = None,
         subset_pct: Optional[float] = None,
+        max_samples: Optional[int] = None,
         seed: int = 42,
         cache_dir: Optional[str] = None,
     ):
-        self.ds = load_dataset("MMMU/MMMU", "all", split=split, cache_dir=cache_dir)
+        config_name = subject if subject else "all"
+        self.ds = load_dataset("MMMU/MMMU", config_name, split=split, cache_dir=cache_dir)
 
-        if subset_pct is not None and 0 < subset_pct < 100:
+        # max_samples takes priority over subset_pct
+        if max_samples is not None:
+            k = min(max_samples, len(self.ds))
+            rng = random.Random(seed)
+            indices = rng.sample(range(len(self.ds)), k)
+            self.ds = self.ds.select(indices)
+        elif subset_pct is not None and 0 < subset_pct < 100:
             k = max(1, int(len(self.ds) * subset_pct / 100))
             rng = random.Random(seed)
             indices = rng.sample(range(len(self.ds)), k)
@@ -195,18 +213,31 @@ class MathVistaDataset(Dataset):
     """
     MathVista dataset via HuggingFace datasets.
     Mathematical reasoning in visual contexts.
+
+    Args:
+        max_samples: Exact number of examples to use. Takes priority over
+                     subset_pct when both are provided.
+        subset_pct: Percentage of examples to sample (0-100). Used only when
+                    max_samples is None.
     """
 
     def __init__(
         self,
         split: str = "testmini",
         subset_pct: Optional[float] = None,
+        max_samples: Optional[int] = None,
         seed: int = 42,
         cache_dir: Optional[str] = None,
     ):
         self.ds = load_dataset("AI4Math/MathVista", split=split, cache_dir=cache_dir)
 
-        if subset_pct is not None and 0 < subset_pct < 100:
+        # max_samples takes priority over subset_pct
+        if max_samples is not None:
+            k = min(max_samples, len(self.ds))
+            rng = random.Random(seed)
+            indices = rng.sample(range(len(self.ds)), k)
+            self.ds = self.ds.select(indices)
+        elif subset_pct is not None and 0 < subset_pct < 100:
             k = max(1, int(len(self.ds) * subset_pct / 100))
             rng = random.Random(seed)
             indices = rng.sample(range(len(self.ds)), k)
@@ -252,7 +283,14 @@ class MathVistaDataset(Dataset):
 
 
 def get_dataset(name: str, **kwargs) -> Dataset:
-    """Factory function to get a dataset by name."""
+    """Factory function to get a dataset by name.
+
+    Common kwargs (forwarded to each dataset class):
+        max_samples (int): exact number of examples to load
+        subset_pct (float): percentage of examples to sample (ignored when max_samples set)
+        seed (int): random seed for sampling
+        subject (str): MMMU only — subject config name, e.g. "Math"
+    """
     datasets_map = {
         "vcr": VCRDataset,
         "mmmu": MMMUDataset,

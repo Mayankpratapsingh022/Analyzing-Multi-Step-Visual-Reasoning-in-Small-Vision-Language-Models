@@ -37,9 +37,11 @@ def main():
     if "sweep" in config:
         run_sweep(
             model_group=config["sweep"],
-            dataset_name=config.get("dataset", "vcr"),
+            dataset_name=config.get("dataset", "mmmu"),
             vcr_dir=config.get("vcr_dir", "data/vcr"),
             subset_pct=config.get("subset_pct"),
+            max_samples=config.get("max_samples"),
+            subject=config.get("subject"),
             quantization=config.get("quantization"),
             seed=config.get("seed", 42),
             device=config.get("device", "cuda"),
@@ -65,9 +67,11 @@ def main():
         try:
             results = run_single_evaluation(
                 model_name=model_name,
-                dataset_name=config.get("dataset", "vcr"),
+                dataset_name=config.get("dataset", "mmmu"),
                 vcr_dir=config.get("vcr_dir", "data/vcr"),
                 subset_pct=config.get("subset_pct"),
+                max_samples=config.get("max_samples"),
+                subject=config.get("subject"),
                 quantization=quant or config.get("quantization"),
                 seed=config.get("seed", 42),
                 device=device,

@@ -1,14 +1,25 @@
 # Baseline evaluation on MathVista benchmark
 experiment_name: baseline_mathvista
 dataset: mathvista
-subset_pct: null       # testmini is ~1000 examples, run full
+
+# --- Sample size ---
+# max_samples: exact number of examples to evaluate.
+#   Takes priority over subset_pct when both are set.
+# subset_pct: percentage of the split to sample.
+#   Set both to null to run the full testmini split (~1000 examples).
+max_samples: 100        # quick baseline; set to null for full testmini
+subset_pct: null
+
 seed: 42
 device: cuda
 output_dir: results
 csv_path: results/baselines_mathvista.csv
 
 models:
+  - name: moondream2
+  - name: qwen2-vl-2b
+  - name: internvl2-2b
+  - name: phi3-vision
   - name: qwen2-vl-7b
+  - name: llava-next-7b
   - name: internvl2-8b
-  - name: llava-1.6-34b
-    quantization: 4bit

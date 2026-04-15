@@ -29,7 +29,7 @@ from src.checkpoint import CheckpointManager
 try:
     from transformers import PreTrainedModel as _PTM
     if not hasattr(_PTM, "all_tied_weights_keys"):
-        _PTM.all_tied_weights_keys = None  # must be None, not [] — transformers calls .keys() on non-None values
+        _PTM.all_tied_weights_keys = {}  # transformers 4.50 calls .keys() on this unconditionally
 except Exception:
     pass
 

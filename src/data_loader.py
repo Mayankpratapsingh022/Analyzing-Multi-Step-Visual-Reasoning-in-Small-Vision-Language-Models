@@ -176,6 +176,17 @@ class MMMUDataset(Dataset):
     def __len__(self):
         return len(self.ds)
 
+    @staticmethod
+    def _to_str(val) -> str:
+        """Coerce any MMMU field value to a plain string.
+
+        MMMU stores some fields (options, questions) as lists of strings
+        rather than plain strings in certain examples.
+        """
+        if isinstance(val, list):
+            return " ".join(str(v) for v in val if v is not None)
+        return str(val) if val is not None else ""
+
     def __getitem__(self, idx: int) -> dict:
         row = self.ds[idx]
 
@@ -187,23 +198,29 @@ class MMMUDataset(Dataset):
                 if isinstance(img, Image.Image):
                     images.append(img.convert("RGB"))
 
-        # Build choices list from options
+        # Build choices list from options — coerce to str in case stored as list
         choices = []
         for opt_key in ["A", "B", "C", "D", "E"]:
             val = row.get(f"option_{opt_key}", row.get(opt_key))
-            if val:
-                choices.append(val)
+            if val is not None and val != "":
+                choices.append(self._to_str(val))
+
+        question = self._to_str(row.get("question", ""))
+
+        ans = row.get("answer", "")
+        ans = self._to_str(ans).strip()
+        answer_label = (
+            ord(ans.upper()) - ord("A")
+            if len(ans) == 1 and ans.upper() in "ABCDE"
+            else -1
+        )
 
         return {
             "image": images[0] if images else None,
             "images": images,
-            "question": row["question"],
+            "question": question,
             "answer_choices": choices,
-            "answer_label": (
-                ord(row["answer"].upper()) - ord("A")
-                if row.get("answer") and len(row["answer"]) == 1 and row["answer"].upper() in "ABCDE"
-                else -1
-            ),
+            "answer_label": answer_label,
             "metadata": {
                 "id": row.get("id", idx),
                 "subject": row.get("subject", ""),

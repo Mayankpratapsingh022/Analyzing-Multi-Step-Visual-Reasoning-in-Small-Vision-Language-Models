@@ -24,7 +24,7 @@ class Moondream2Evaluator(VLMEvaluator):
         self.model = AutoModelForCausalLM.from_pretrained(
             self.HF_ID,
             trust_remote_code=True,
-            torch_dtype=dtype,
+            dtype=dtype,
             device_map=device if quantization else None,
             quantization_config=self.get_quantization_config(quantization),
         )

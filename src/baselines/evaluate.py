@@ -76,7 +76,7 @@ def get_vram_usage() -> float:
 def get_vram_total() -> float:
     """Total GPU memory in GB."""
     if torch.cuda.is_available():
-        return torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+        return torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
     return 0.0
 
 

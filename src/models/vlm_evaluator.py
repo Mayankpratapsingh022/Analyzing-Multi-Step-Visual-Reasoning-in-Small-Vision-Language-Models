@@ -21,6 +21,18 @@ from PIL import Image
 from src.logger import format_time, format_progress_bar, TRACE
 from src.checkpoint import CheckpointManager
 
+# ---------------------------------------------------------------------------
+# Compatibility patch for transformers >= 4.50
+# Models loaded with trust_remote_code=True may not define all_tied_weights_keys,
+# which transformers 4.50 now requires on every PreTrainedModel subclass.
+# ---------------------------------------------------------------------------
+try:
+    from transformers import PreTrainedModel as _PTM
+    if not hasattr(_PTM, "all_tied_weights_keys"):
+        _PTM.all_tied_weights_keys = []
+except Exception:
+    pass
+
 
 log = logging.getLogger("vlm-eval")
 
@@ -126,7 +138,7 @@ class VLMEvaluator(ABC):
         """
         if not torch.cuda.is_available():
             return 1
-        total = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+        total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
         used = torch.cuda.memory_allocated() / (1024 ** 3)
         free = total - used
         # ~1.5 GB per extra item, 2 GB headroom

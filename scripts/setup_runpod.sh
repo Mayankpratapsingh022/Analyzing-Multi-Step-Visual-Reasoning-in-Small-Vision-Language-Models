@@ -105,13 +105,15 @@ fi
 section "4/6  Installing Python dependencies"
 cd "$PROJECT_ROOT"
 
+pip install --upgrade -r requirements.txt
+
 if [[ "$SKIP_FLASH_ATTN" -eq 1 ]]; then
-    warn "--skip-flash-attn: installing everything except flash-attn"
-    grep -v '^flash-attn' requirements.txt > /tmp/requirements_no_flash.txt
-    pip install --upgrade -r /tmp/requirements_no_flash.txt
+    warn "--skip-flash-attn: skipping flash-attention installation."
 else
-    info "Installing all deps including flash-attn (this will take ~10-15 min the first time)"
-    pip install --upgrade -r requirements.txt
+    info "Installing flash-attn (this will take ~10-15 min the first time)..."
+    # --no-build-isolation uses the already-installed torch/CUDA rather than
+    # a fresh build env, which is required for flash-attn to compile correctly.
+    pip install flash-attn --no-build-isolation
 fi
 
 # Install the project itself in editable mode so `src.*` imports resolve

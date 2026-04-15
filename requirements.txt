@@ -36,6 +36,11 @@ pyyaml>=6.0
 openai>=1.35.0
 anthropic>=0.30.0
 
-# Flash-attention (compiled against the pod's CUDA — slow first install, ~10-15 min)
-# Comment out if you don't need sub-7B throughput optimisation.
-flash-attn>=2.5.0
+# Flash-attention is NOT listed here — it must be installed separately with
+# the pre-built wheel matching your exact CUDA + PyTorch versions.
+# Run this after pip install -r requirements.txt:
+#
+#   pip install flash-attn --no-build-isolation
+#
+# Or use the setup script flag (handles this automatically):
+#   bash scripts/setup_runpod.sh  (without --skip-flash-attn)

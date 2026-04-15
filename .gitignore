@@ -4,14 +4,23 @@ data/mmmu/
 data/mathvista/
 data/gqa/
 
-# Model weights / caches
+# Model weights / caches / checkpoints
 *.bin
 *.safetensors
 *.gguf
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.keras
 .cache/
+checkpoints/
+models/
 
 # Python
 __pycache__/
+.pytest_cache/
+.mypy_cache/
 *.py[cod]
 *.egg-info/
 dist/
@@ -21,13 +30,20 @@ build/
 # Environment
 .env
 *.env
+venv/
+.venv/
+env/
 
 # Experiment tracking
 wandb/
+runs/
+logs/
+*.log
 
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 
@@ -35,9 +51,15 @@ wandb/
 .DS_Store
 Thumbs.db
 
-# Results (keep CSV/JSON, ignore large temp files)
+# Results (ignore temp files, CSVs, and JSONs)
 results/**/*.tmp
 results/**/*.pkl
+results/**/*.csv
+results/**/*.json
+*.csv
+*.json
 
 # Jupyter
 .ipynb_checkpoints/
+
+/

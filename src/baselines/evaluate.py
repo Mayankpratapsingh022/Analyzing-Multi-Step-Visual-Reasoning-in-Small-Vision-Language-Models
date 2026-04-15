@@ -29,6 +29,7 @@ import argparse
 import csv
 import json
 import logging
+import multiprocessing as mp
 import os
 import time
 from datetime import datetime
@@ -252,6 +253,30 @@ def append_to_csv(results: dict, csv_path: str = "results/baselines.csv"):
     log.info(f"Summary row appended to: {csv_path}")
 
 
+def _eval_worker(eval_kwargs: dict, csv_path: str, result_queue) -> None:
+    """Isolated worker process for a single model evaluation.
+
+    Runs in a spawned child process so a CUDA device-side assertion or
+    out-of-memory crash cannot corrupt the parent GPU context or kill the
+    rest of the sweep.  Results are written to disk (JSON + CSV) inside the
+    child; a summary dict is also pushed onto result_queue so the parent
+    can build the final sweep table.
+    """
+    import logging as _logging
+    from src.logger import setup_logger as _setup_logger
+    _setup_logger(name="vlm-eval", console_level=_logging.INFO)
+
+    try:
+        results = run_single_evaluation(**eval_kwargs)
+        append_to_csv(results, csv_path)
+        # Strip per_example to keep the IPC payload small
+        summary = {k: v for k, v in results.items() if k != "per_example"}
+        result_queue.put(("ok", summary))
+    except Exception as exc:
+        import traceback as _tb
+        result_queue.put(("error", str(exc), _tb.format_exc()))
+
+
 def run_sweep(
     model_group: str,
     dataset_name: str,
@@ -288,27 +313,43 @@ def run_sweep(
         if model_name in ("gpt-4o", "claude"):
             device = "cpu"
 
-        try:
-            results = run_single_evaluation(
-                model_name=model_name,
-                dataset_name=dataset_name,
-                vcr_dir=kwargs.get("vcr_dir", "data/vcr"),
-                subset_pct=kwargs.get("subset_pct"),
-                max_samples=kwargs.get("max_samples"),
-                subject=kwargs.get("subject"),
-                quantization=quant,
-                seed=kwargs.get("seed", 42),
-                device=device,
-                output_dir=kwargs.get("output_dir", "results"),
-                restart=kwargs.get("restart", False),
-                batch_size=kwargs.get("batch_size", 0),
-            )
-            append_to_csv(results, kwargs.get("csv_path", "results/baselines.csv"))
-            all_results.append(results)
+        eval_kwargs = dict(
+            model_name=model_name,
+            dataset_name=dataset_name,
+            vcr_dir=kwargs.get("vcr_dir", "data/vcr"),
+            subset_pct=kwargs.get("subset_pct"),
+            max_samples=kwargs.get("max_samples"),
+            subject=kwargs.get("subject"),
+            quantization=quant,
+            seed=kwargs.get("seed", 42),
+            device=device,
+            output_dir=kwargs.get("output_dir", "results"),
+            restart=kwargs.get("restart", False),
+            batch_size=kwargs.get("batch_size", 0),
+        )
+        csv_path = kwargs.get("csv_path", "results/baselines.csv")
 
-        except Exception as e:
-            log.error(f"FAILED: {model_name} -- {e}", exc_info=True)
-            continue
+        # Each model runs in its own spawned process so that a CUDA
+        # device-side assertion or OOM crash cannot corrupt the parent GPU
+        # context and take down the remaining models in the sweep.
+        ctx = mp.get_context("spawn")
+        q = ctx.Queue()
+        proc = ctx.Process(target=_eval_worker, args=(eval_kwargs, csv_path, q))
+        proc.start()
+        proc.join()
+
+        if not q.empty():
+            item = q.get()
+            if item[0] == "ok":
+                all_results.append(item[1])
+            else:
+                log.error(f"FAILED: {model_name} -- {item[1]}")
+                if len(item) > 2:
+                    log.debug(item[2])
+        else:
+            log.error(
+                f"FAILED: {model_name} -- worker process exited with code {proc.exitcode}"
+            )
 
     # ---- Sweep summary ----
     sweep_time = time.time() - sweep_start

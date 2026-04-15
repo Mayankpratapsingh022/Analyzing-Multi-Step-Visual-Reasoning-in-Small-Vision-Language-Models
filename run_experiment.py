@@ -8,11 +8,12 @@ Usage:
 """
 
 import argparse
+import multiprocessing as mp
 import sys
 
 import yaml
 
-from src.baselines.evaluate import run_single_evaluation, append_to_csv, run_sweep
+from src.baselines.evaluate import run_single_evaluation, append_to_csv, run_sweep, _eval_worker
 
 
 def main():
@@ -64,23 +65,36 @@ def main():
         if model_name in ("gpt-4o", "claude"):
             device = "cpu"
 
-        try:
-            results = run_single_evaluation(
-                model_name=model_name,
-                dataset_name=config.get("dataset", "mmmu"),
-                vcr_dir=config.get("vcr_dir", "data/vcr"),
-                subset_pct=config.get("subset_pct"),
-                max_samples=config.get("max_samples"),
-                subject=config.get("subject"),
-                quantization=quant or config.get("quantization"),
-                seed=config.get("seed", 42),
-                device=device,
-                output_dir=config.get("output_dir", "results"),
-            )
-            append_to_csv(results, config.get("csv_path", "results/baselines.csv"))
-        except Exception as e:
-            print(f"FAILED: {model_name} -- {e}")
-            continue
+        eval_kwargs = dict(
+            model_name=model_name,
+            dataset_name=config.get("dataset", "mmmu"),
+            vcr_dir=config.get("vcr_dir", "data/vcr"),
+            subset_pct=config.get("subset_pct"),
+            max_samples=config.get("max_samples"),
+            subject=config.get("subject"),
+            quantization=quant or config.get("quantization"),
+            seed=config.get("seed", 42),
+            device=device,
+            output_dir=config.get("output_dir", "results"),
+        )
+        csv_path = config.get("csv_path", "results/baselines.csv")
+
+        # Isolate each model in its own spawned process so a CUDA
+        # device-side assertion cannot cascade to subsequent models.
+        ctx = mp.get_context("spawn")
+        q = ctx.Queue()
+        proc = ctx.Process(target=_eval_worker, args=(eval_kwargs, csv_path, q))
+        proc.start()
+        proc.join()
+
+        if not q.empty():
+            item = q.get()
+            if item[0] == "ok":
+                print(f"OK: {model_name}")
+            else:
+                print(f"FAILED: {model_name} -- {item[1]}")
+        else:
+            print(f"FAILED: {model_name} -- worker process exited with code {proc.exitcode}")
 
 
 if __name__ == "__main__":

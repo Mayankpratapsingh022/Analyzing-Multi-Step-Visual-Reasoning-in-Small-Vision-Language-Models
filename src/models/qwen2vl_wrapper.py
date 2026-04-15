@@ -52,7 +52,9 @@ class Qwen2VLBase(VLMEvaluator):
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            output_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+            output_ids = self.model.generate(
+                **inputs, max_new_tokens=max_new_tokens, do_sample=False
+            )
 
         generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
         return self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
@@ -65,7 +67,9 @@ class Qwen2VLBase(VLMEvaluator):
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            output_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+            output_ids = self.model.generate(
+                **inputs, max_new_tokens=max_new_tokens, do_sample=False
+            )
 
         generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
         return self.processor.batch_decode(generated_ids, skip_special_tokens=True)

@@ -3,10 +3,25 @@
 from typing import Optional
 
 import torch
+import torchvision.transforms as T
 from PIL import Image
+from torchvision.transforms.functional import InterpolationMode
 from transformers import AutoModel, AutoTokenizer
 
 from .vlm_evaluator import VLMEvaluator, register_evaluator
+
+
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)
+_IMAGENET_STD = (0.229, 0.224, 0.225)
+
+
+def _build_transform(input_size: int = 448):
+    return T.Compose([
+        T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
+        T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
+        T.ToTensor(),
+        T.Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD),
+    ])
 
 
 class InternVL2Base(VLMEvaluator):
@@ -38,6 +53,17 @@ class InternVL2Base(VLMEvaluator):
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.HF_ID, trust_remote_code=True
         )
+        # InternLM2ForCausalLM (the inner language_model) does not inherit
+        # GenerationMixin on transformers >= 4.50, so `language_model.generate`
+        # is missing. Rebuild its class with GenerationMixin as a mixin.
+        from transformers.generation import GenerationMixin
+        lm = self.model.language_model
+        if not isinstance(lm, GenerationMixin):
+            lm.__class__ = type(
+                lm.__class__.__name__ + "WithGen",
+                (lm.__class__, GenerationMixin),
+                {},
+            )
         self.model.eval()
 
     def _preprocess_image(self, image: Image.Image):
@@ -55,6 +81,13 @@ class InternVL2Base(VLMEvaluator):
             # Fallback: use model's built-in image handling
             return image
 
+    def _image_to_tensor(self, image: Image.Image) -> torch.Tensor:
+        """Convert PIL image to InternVL2's expected (N, 3, 448, 448) tensor."""
+        transform = _build_transform(input_size=448)
+        tensor = transform(image).unsqueeze(0)
+        param = next(self.model.parameters())
+        return tensor.to(dtype=param.dtype, device=param.device)
+
     def generate(self, image: Image.Image, prompt: str, max_new_tokens: int = 512) -> str:
         # InternVL2 models typically expose a .chat() method
         if hasattr(self.model, "chat"):
@@ -62,9 +95,10 @@ class InternVL2Base(VLMEvaluator):
                 "max_new_tokens": max_new_tokens,
                 "do_sample": False,
             }
+            pixel_values = self._image_to_tensor(image)
             response = self.model.chat(
                 self.tokenizer,
-                image,
+                pixel_values,
                 prompt,
                 generation_config,
             )

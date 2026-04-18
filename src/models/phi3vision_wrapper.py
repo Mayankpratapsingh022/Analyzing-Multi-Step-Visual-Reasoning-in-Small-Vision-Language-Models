@@ -38,6 +38,12 @@ class Phi3VisionEvaluator(VLMEvaluator):
             load_kwargs["device_map"] = device
 
         self.model = AutoModelForCausalLM.from_pretrained(self.HF_ID, **load_kwargs)
+        # Phi-3-Vision's remote modeling code references DynamicCache.seen_tokens,
+        # which was removed in newer transformers. Add it back as a property
+        # that delegates to the current public API (get_seq_length).
+        from transformers.cache_utils import DynamicCache
+        if not hasattr(DynamicCache, "seen_tokens"):
+            DynamicCache.seen_tokens = property(lambda self: self.get_seq_length())
         self.model.eval()
 
     def _build_chat_text(self, prompt: str) -> str:
@@ -60,16 +66,6 @@ class Phi3VisionEvaluator(VLMEvaluator):
         generated = output_ids[:, inputs["input_ids"].shape[1]:]
         return self.processor.batch_decode(generated, skip_special_tokens=True)[0]
 
-    def generate_batch(self, images: list, prompts: list, max_new_tokens: int = 512) -> list:
-        texts = [self._build_chat_text(p) for p in prompts]
-        inputs = self.processor(texts, images=images, return_tensors="pt", padding=True)
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-
-        with torch.no_grad():
-            output_ids = self.model.generate(
-                **inputs, max_new_tokens=max_new_tokens, do_sample=False,
-                eos_token_id=self.processor.tokenizer.eos_token_id,
-            )
-
-        generated = output_ids[:, inputs["input_ids"].shape[1]:]
-        return self.processor.batch_decode(generated, skip_special_tokens=True)
+    # Phi-3 Vision's processor only accepts a single text at a time
+    # (its __call__ does re.split on the text arg). Fall back to the base
+    # class's sequential loop over generate().

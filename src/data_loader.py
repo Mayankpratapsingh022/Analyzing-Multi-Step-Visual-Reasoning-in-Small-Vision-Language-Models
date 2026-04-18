@@ -11,7 +11,7 @@ from typing import Optional
 
 from PIL import Image
 from torch.utils.data import Dataset
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets, get_dataset_config_names
 
 
 class VCRDataset(Dataset):
@@ -158,8 +158,16 @@ class MMMUDataset(Dataset):
         seed: int = 42,
         cache_dir: Optional[str] = None,
     ):
-        config_name = subject if subject else "all"
-        self.ds = load_dataset("MMMU/MMMU", config_name, split=split, cache_dir=cache_dir)
+        if subject:
+            self.ds = load_dataset("MMMU/MMMU", subject, split=split, cache_dir=cache_dir)
+        else:
+            # MMMU has no "all" config — load each subject config and concatenate
+            configs = get_dataset_config_names("MMMU/MMMU")
+            parts = [
+                load_dataset("MMMU/MMMU", cfg, split=split, cache_dir=cache_dir)
+                for cfg in configs
+            ]
+            self.ds = concatenate_datasets(parts)
 
         # max_samples takes priority over subset_pct
         if max_samples is not None:
@@ -198,12 +206,27 @@ class MMMUDataset(Dataset):
                 if isinstance(img, Image.Image):
                     images.append(img.convert("RGB"))
 
-        # Build choices list from options — coerce to str in case stored as list
+        # MMMU stores choices in a single `options` column as a Python-literal
+        # list string, e.g. "['Aurelia', 'Matilda', 'Hermione', 'Juno']".
+        # Some older schemas use per-letter `option_A`..`option_E` fields.
+        raw_opts = row.get("options")
         choices = []
-        for opt_key in ["A", "B", "C", "D", "E"]:
-            val = row.get(f"option_{opt_key}", row.get(opt_key))
-            if val is not None and val != "":
-                choices.append(self._to_str(val))
+        if raw_opts is not None:
+            if isinstance(raw_opts, str):
+                try:
+                    import ast
+                    parsed = ast.literal_eval(raw_opts)
+                    if isinstance(parsed, list):
+                        raw_opts = parsed
+                except (ValueError, SyntaxError):
+                    raw_opts = [raw_opts]
+            if isinstance(raw_opts, list):
+                choices = [self._to_str(o) for o in raw_opts if o is not None and o != ""]
+        if not choices:
+            for opt_key in ["A", "B", "C", "D", "E"]:
+                val = row.get(f"option_{opt_key}", row.get(opt_key))
+                if val is not None and val != "":
+                    choices.append(self._to_str(val))
 
         question = self._to_str(row.get("question", ""))
 

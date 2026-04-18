@@ -214,7 +214,9 @@ def run_single_evaluation(
     log.info(f"Per-example results saved to: {detail_path}")
 
     # ---- Free GPU memory ----
-    del evaluator.model
+    # API-only evaluators (gpt-4o, claude) have no .model attribute
+    if hasattr(evaluator, "model") and evaluator.model is not None:
+        del evaluator.model
     if hasattr(evaluator, "processor") and evaluator.processor:
         del evaluator.processor
     if torch.cuda.is_available():
@@ -251,6 +253,62 @@ def append_to_csv(results: dict, csv_path: str = "results/baselines.csv"):
         writer.writerow(row)
 
     log.info(f"Summary row appended to: {csv_path}")
+
+    png_path = os.path.splitext(csv_path)[0] + ".png"
+    try:
+        render_baselines_table(csv_path, png_path)
+        log.info(f"Table plot saved to: {png_path}")
+    except Exception as exc:
+        log.warning(f"Could not render table plot: {exc}")
+
+
+def render_baselines_table(csv_path: str, png_path: str) -> None:
+    """Render the baselines CSV as a PNG table image."""
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    df = pd.read_csv(csv_path)
+    display_cols = [
+        "run_id", "model_name", "param_count", "quantization",
+        "dataset", "num_examples",
+        "q_a_accuracy", "qa_r_accuracy", "q_ar_accuracy", "accuracy",
+        "parse_failure_rate", "avg_inference_time_sec",
+        "wall_time_sec", "vram_model_gb", "timestamp",
+    ]
+    cols = [c for c in display_cols if c in df.columns]
+    df = df[cols].copy()
+
+    for c in df.columns:
+        if df[c].dtype.kind == "f":
+            df[c] = df[c].map(lambda v: "" if pd.isna(v) else f"{v:.4f}" if abs(v) < 100 else f"{v:.2f}")
+        else:
+            df[c] = df[c].astype(str).replace({"nan": ""})
+
+    n_rows, n_cols = df.shape
+    fig_w = max(14, 1.2 * n_cols)
+    fig_h = max(2.0, 0.45 * (n_rows + 2))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.axis("off")
+    table = ax.table(
+        cellText=df.values.tolist(),
+        colLabels=df.columns.tolist(),
+        loc="center",
+        cellLoc="left",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.auto_set_column_width(col=list(range(n_cols)))
+    for (r, c), cell in table.get_celld().items():
+        if r == 0:
+            cell.set_facecolor("#2b2b2b")
+            cell.set_text_props(color="white", weight="bold")
+        elif r % 2 == 0:
+            cell.set_facecolor("#f5f5f5")
+
+    ax.set_title("Baseline Results", fontsize=12, weight="bold", pad=10)
+    fig.tight_layout()
+    fig.savefig(png_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def _eval_worker(eval_kwargs: dict, csv_path: str, result_queue) -> None:

@@ -1,34 +1,65 @@
 name: small-vlm-reasoning
+
+# CUDA/Linux environment for evaluating small and large vision-language models.
+# On CPU-only or macOS machines, remove `pytorch-cuda` and install the
+# platform-specific PyTorch build before installing the pip dependencies.
 channels:
   - pytorch
   - nvidia
   - conda-forge
   - defaults
+
 dependencies:
   - python=3.10
+  - pip
+  - setuptools
+  - wheel
+
+  # PyTorch stack expected by scripts/setup_runpod.sh.
   - pytorch=2.3.1
   - torchvision=0.18.1
   - torchaudio=2.3.1
   - pytorch-cuda=12.1
-  - pip
+
   - pip:
+      # Install this repository as an editable package so `src.*` imports work.
+      - -e .
+
+      # Hugging Face model and dataset loading.
       - transformers>=4.44.0
       - accelerate>=0.33.0
       - bitsandbytes>=0.43.0
-      - timm>=1.0.3
       - datasets>=2.20.0
+      - huggingface_hub>=0.24.0
+      - sentencepiece>=0.2.0
+      - protobuf>=4.25.0
+
+      # Vision and model helpers used by the wrappers.
+      - timm>=1.0.3
       - Pillow>=10.3.0
+      - einops>=0.8.0
+      - qwen-vl-utils>=0.0.2
+
+      # Data processing and metrics.
       - pandas>=2.2.0
       - numpy>=1.26.0
       - scipy>=1.13.0
       - scikit-learn>=1.5.0
-      - wandb>=0.17.0
+
+      # Plotting, logging, and experiment utilities.
       - matplotlib>=3.9.0
       - seaborn>=0.13.0
       - tqdm>=4.66.0
       - pyyaml>=6.0
+      - wandb>=0.17.0
+
+      # Optional closed-model baselines.
       - openai>=1.35.0
       - anthropic>=0.30.0
-      - flash-attn>=2.5.0
-      - qwen-vl-utils>=0.0.2
-      - einops>=0.8.0
+
+# Optional CUDA speedup:
+#   pip install flash-attn --no-build-isolation
+#
+# Keep flash-attn outside this file because it must match the exact CUDA,
+# compiler, and PyTorch build on the target machine. The RunPod bootstrap script
+# installs it separately unless called with --skip-flash-attn.

@@ -131,6 +131,9 @@ def show_detail(checkpoint_file: str):
     print(f"  Seed         : {data.get('seed', '?')}")
     print(f"  Quantization : {data.get('quantization', 'none')}")
     print(f"  Subset %     : {data.get('subset_pct', 'full')}")
+    print(f"  Max samples  : {data.get('max_samples', 'full')}")
+    print(f"  Prompt strat.: {data.get('prompt_strategy', 'zero_shot_direct')}")
+    print(f"  Max tokens   : {data.get('max_new_tokens', 8)}")
     print(f"")
     print(f"  Status       : {colored_status(status)}")
     print(f"  Progress     : {done}/{total} ({format_pct(done, total)})")
@@ -163,10 +166,19 @@ def show_detail(checkpoint_file: str):
     dataset = data.get("dataset", "DATASET")
     seed = data.get("seed", 42)
     subset = data.get("subset_pct")
+    max_samples = data.get("max_samples")
+    prompt_strategy = data.get("prompt_strategy", "zero_shot_direct")
+    max_new_tokens = data.get("max_new_tokens", 8)
 
     base_cmd = f"python -m src.baselines.evaluate --model {model} --dataset {dataset} --seed {seed}"
+    if max_samples:
+        base_cmd += f" --max_samples {max_samples}"
     if subset:
         base_cmd += f" --subset_pct {subset}"
+    if prompt_strategy:
+        base_cmd += f" --prompt_strategy {prompt_strategy}"
+    if max_new_tokens:
+        base_cmd += f" --max_new_tokens {max_new_tokens}"
     if dataset == "vcr":
         base_cmd += " --vcr_dir data/vcr"
 
@@ -194,12 +206,21 @@ def show_resume_commands(checkpoints: list[dict]):
         dataset = c["dataset"]
         seed = c.get("seed", 42)
         subset = c.get("subset_pct")
+        max_samples = c.get("max_samples")
+        prompt_strategy = c.get("prompt_strategy", "zero_shot_direct")
+        max_new_tokens = c.get("max_new_tokens", 8)
         done = c["completed"]
         total = c["total"]
 
         cmd = f"python -m src.baselines.evaluate --model {model} --dataset {dataset} --seed {seed}"
+        if max_samples:
+            cmd += f" --max_samples {max_samples}"
         if subset:
             cmd += f" --subset_pct {subset}"
+        if prompt_strategy:
+            cmd += f" --prompt_strategy {prompt_strategy}"
+        if max_new_tokens:
+            cmd += f" --max_new_tokens {max_new_tokens}"
         if dataset == "vcr":
             cmd += " --vcr_dir data/vcr"
 

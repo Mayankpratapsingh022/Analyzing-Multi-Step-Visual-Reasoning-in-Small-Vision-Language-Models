@@ -33,6 +33,12 @@ class VCRDataset(Dataset):
             vcr1images/        # images organized by movie
                 movieclip_xxx/
                     xxx.jpg
+
+    Args:
+        max_samples: Exact number of examples to use. Takes priority over
+                     subset_pct when both are provided.
+        subset_pct: Percentage of examples to sample (0-100). Used only when
+                    max_samples is None.
     """
 
     SPLITS = ("train", "val", "test")
@@ -42,6 +48,7 @@ class VCRDataset(Dataset):
         vcr_dir: str,
         split: str = "val",
         subset_pct: Optional[float] = None,
+        max_samples: Optional[int] = None,
         seed: int = 42,
     ):
         assert split in self.SPLITS, f"split must be one of {self.SPLITS}"
@@ -62,7 +69,11 @@ class VCRDataset(Dataset):
             for line in f:
                 self.annotations.append(json.loads(line.strip()))
 
-        if subset_pct is not None and 0 < subset_pct < 100:
+        if max_samples is not None:
+            rng = random.Random(seed)
+            k = min(max_samples, len(self.annotations))
+            self.annotations = rng.sample(self.annotations, k)
+        elif subset_pct is not None and 0 < subset_pct < 100:
             rng = random.Random(seed)
             k = max(1, int(len(self.annotations) * subset_pct / 100))
             self.annotations = rng.sample(self.annotations, k)
@@ -88,6 +99,16 @@ class VCRDataset(Dataset):
                 parts.append(str(token))
         return " ".join(parts)
 
+    def _extract_references(self, tokens: list) -> list[int]:
+        """Return VCR object ids referenced in a token list."""
+        refs = []
+        for token in tokens:
+            if isinstance(token, list):
+                for item in token:
+                    if isinstance(item, int):
+                        refs.append(item)
+        return refs
+
     def __getitem__(self, idx: int) -> dict:
         ann = self.annotations[idx]
 
@@ -107,6 +128,15 @@ class VCRDataset(Dataset):
             self._resolve_references(choice, objects)
             for choice in ann["rationale_choices"]
         ]
+        question_refs = self._extract_references(ann["question"])
+        answer_choice_refs = [
+            self._extract_references(choice)
+            for choice in ann["answer_choices"]
+        ]
+        rationale_choice_refs = [
+            self._extract_references(choice)
+            for choice in ann["rationale_choices"]
+        ]
 
         result = {
             "image": image,
@@ -120,6 +150,9 @@ class VCRDataset(Dataset):
                 "img_fn": ann["img_fn"],
                 "objects": objects,
                 "metadata_fn": metadata_fn,
+                "question_object_refs": question_refs,
+                "answer_choice_object_refs": answer_choice_refs,
+                "rationale_choice_object_refs": rationale_choice_refs,
             },
         }
 

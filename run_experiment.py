@@ -9,11 +9,10 @@ Usage:
 
 import argparse
 import multiprocessing as mp
+import os
 import sys
 
 import yaml
-
-from src.baselines.evaluate import run_single_evaluation, append_to_csv, run_sweep, _eval_worker
 
 
 def main():
@@ -29,10 +28,16 @@ def main():
     print(f"Experiment: {config.get('experiment_name', 'unnamed')}")
     print(f"Dataset: {config.get('dataset', 'vcr')}")
 
+    wandb_enabled = bool(config.get("wandb", False)) and os.environ.get("USE_WANDB", "1") != "0"
+    wandb_project = os.environ.get("WANDB_PROJECT", config.get("wandb_project"))
+    wandb_entity = os.environ.get("WANDB_ENTITY", config.get("wandb_entity"))
+
     if args.dry_run:
         print("\nFull config:")
         yaml.dump(config, sys.stdout, default_flow_style=False)
         return
+
+    from src.baselines.evaluate import run_sweep, _eval_worker
 
     # Support sweep mode
     if "sweep" in config:
@@ -48,6 +53,14 @@ def main():
             device=config.get("device", "cuda"),
             output_dir=config.get("output_dir", "results"),
             csv_path=config.get("csv_path", "results/baselines.csv"),
+            deterministic=config.get("deterministic", True),
+            max_new_tokens=config.get("max_new_tokens", 8),
+            prompt_strategy=config.get("prompt_strategy", "zero_shot_direct"),
+            wandb_enabled=wandb_enabled,
+            wandb_project=wandb_project,
+            wandb_entity=wandb_entity,
+            wandb_group=config.get("wandb_group"),
+            wandb_tags=config.get("wandb_tags"),
         )
         return
 
@@ -76,6 +89,14 @@ def main():
             seed=config.get("seed", 42),
             device=device,
             output_dir=config.get("output_dir", "results"),
+            deterministic=config.get("deterministic", True),
+            max_new_tokens=config.get("max_new_tokens", 8),
+            prompt_strategy=config.get("prompt_strategy", "zero_shot_direct"),
+            wandb_enabled=wandb_enabled,
+            wandb_project=wandb_project,
+            wandb_entity=wandb_entity,
+            wandb_group=config.get("wandb_group"),
+            wandb_tags=config.get("wandb_tags"),
         )
         csv_path = config.get("csv_path", "results/baselines.csv")
 

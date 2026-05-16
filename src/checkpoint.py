@@ -26,9 +26,16 @@ log = logging.getLogger("vlm-eval")
 CHECKPOINT_DIR = Path("results/checkpoints")
 
 
-def checkpoint_path(model_name: str, dataset: str, split: str, seed: int) -> Path:
+def checkpoint_path(
+    model_name: str,
+    dataset: str,
+    split: str,
+    seed: int,
+    run_key: str | None = None,
+) -> Path:
     """Deterministic checkpoint filename for a run config."""
-    return CHECKPOINT_DIR / f"{model_name}_{dataset}_{split}_{seed}.checkpoint.json"
+    suffix = f"_{run_key}" if run_key else ""
+    return CHECKPOINT_DIR / f"{model_name}_{dataset}_{split}_{seed}{suffix}.checkpoint.json"
 
 
 def load_checkpoint(path: Path) -> Optional[dict]:
@@ -68,6 +75,10 @@ def list_checkpoints() -> list[dict]:
                 "seed": data.get("seed", "?"),
                 "quantization": data.get("quantization", "none"),
                 "subset_pct": data.get("subset_pct"),
+                "max_samples": data.get("max_samples"),
+                "prompt_strategy": data.get("prompt_strategy"),
+                "max_new_tokens": data.get("max_new_tokens"),
+                "run_key": data.get("run_key"),
                 "status": data.get("status", "?"),
                 "completed": data.get("completed_examples", 0),
                 "total": data.get("total_examples", 0),
@@ -105,23 +116,31 @@ class CheckpointManager:
         seed: int,
         total_examples: int,
         run_id: str = "",
+        run_key: str | None = None,
         quantization: str = "none",
         subset_pct: Optional[float] = None,
+        max_samples: Optional[int] = None,
+        prompt_strategy: str = "zero_shot_direct",
+        max_new_tokens: int = 8,
         save_interval_sec: float = 300,  # 5 minutes
     ):
-        self.path = checkpoint_path(model_name, dataset, split, seed)
+        self.path = checkpoint_path(model_name, dataset, split, seed, run_key=run_key)
         self.save_interval_sec = save_interval_sec
         self._last_save_time = time.time()
         self._interrupted = False
 
         self._data = {
             "run_id": run_id,
+            "run_key": run_key,
             "model_name": model_name,
             "dataset": dataset,
             "split": split,
             "seed": seed,
             "quantization": quantization,
             "subset_pct": subset_pct,
+            "max_samples": max_samples,
+            "prompt_strategy": prompt_strategy,
+            "max_new_tokens": max_new_tokens,
             "total_examples": total_examples,
             "completed_examples": 0,
             "status": "in_progress",

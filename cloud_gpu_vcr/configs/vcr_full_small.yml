@@ -1,0 +1,31 @@
+# Full VCR validation on small open-weight models.
+experiment_name: vcr_full_small
+dataset: vcr
+vcr_dir: /workspace/data/vcr
+max_samples: null
+subset_pct: null
+seed: 42
+device: cuda
+deterministic: true
+batch_size: 1
+max_new_tokens: 8
+prompt_strategy: zero_shot_direct
+output_dir: results
+csv_path: results/baselines_vcr_small.csv
+
+wandb: true
+wandb_project: small-vlm-reasoning-vcr
+wandb_group: vcr-full-small
+wandb_tags:
+  - vcr
+  - full
+  - small-models
+
+models:
+  - name: moondream2
+  - name: qwen2-vl-2b
+  - name: internvl2-2b
+  - name: phi3-vision
+  - name: qwen2-vl-7b
+  - name: llava-next-7b
+  - name: internvl2-8b

@@ -220,12 +220,16 @@ class VLMEvaluator(ABC):
         dataset,
         split: str = "val",
         subset_pct: Optional[float] = None,
+        max_samples: Optional[int] = None,
         seed: int = 42,
         log_every: int = 25,
         run_id: str = "",
+        run_key: str = "",
         restart: bool = False,
         save_interval_sec: float = 300,
         batch_size: int = 0,
+        max_new_tokens: int = 8,
+        prompt_strategy: str = "zero_shot_direct",
     ) -> dict:
         """Run full VCR evaluation: Q->A, QA->R, Q->AR.
 
@@ -251,7 +255,11 @@ class VLMEvaluator(ABC):
             seed=seed,
             total_examples=total,
             run_id=run_id,
+            run_key=run_key,
             subset_pct=subset_pct,
+            max_samples=max_samples,
+            prompt_strategy=prompt_strategy,
+            max_new_tokens=max_new_tokens,
             save_interval_sec=save_interval_sec,
         )
 
@@ -285,8 +293,11 @@ class VLMEvaluator(ABC):
             "dataset": "vcr",
             "split": split,
             "subset_pct": subset_pct,
+            "max_samples": max_samples,
             "seed": seed,
             "batch_size": batch_size,
+            "prompt_strategy": prompt_strategy,
+            "generation_max_new_tokens": max_new_tokens,
             "per_example": list(resumed_examples),
         }
 
@@ -320,7 +331,9 @@ class VLMEvaluator(ABC):
                 log.log(TRACE, f"[Example {idx+1}/{total} | ID: {aid}] Q->A PROMPT:\n{p}")
 
             t0 = time.time()
-            qa_outputs = self.generate_batch(qa_images, qa_prompts)
+            qa_outputs = self.generate_batch(
+                qa_images, qa_prompts, max_new_tokens=max_new_tokens
+            )
             qa_batch_time = time.time() - t0
 
             # -- Collect QA->R batch --
@@ -339,7 +352,9 @@ class VLMEvaluator(ABC):
                 log.log(TRACE, f"[Example {idx+1}/{total} | ID: {aid}] QA->R PROMPT:\n{p}")
 
             t2 = time.time()
-            qar_outputs = self.generate_batch(qa_images, qar_prompts)
+            qar_outputs = self.generate_batch(
+                qa_images, qar_prompts, max_new_tokens=max_new_tokens
+            )
             qar_batch_time = time.time() - t2
 
             # Distribute time evenly across batch items for per-example stats
@@ -497,9 +512,12 @@ class VLMEvaluator(ABC):
         log_every: int = 20,
         seed: int = 42,
         run_id: str = "",
+        run_key: str = "",
         restart: bool = False,
         save_interval_sec: float = 300,
         batch_size: int = 0,
+        max_new_tokens: int = 8,
+        prompt_strategy: str = "zero_shot_direct",
     ) -> dict:
         """Generic MCQ evaluation for MMMU / MathVista with batching + checkpointing."""
         total = len(dataset)
@@ -516,6 +534,9 @@ class VLMEvaluator(ABC):
             seed=seed,
             total_examples=total,
             run_id=run_id,
+            run_key=run_key,
+            prompt_strategy=prompt_strategy,
+            max_new_tokens=max_new_tokens,
             save_interval_sec=save_interval_sec,
         )
 
@@ -577,7 +598,11 @@ class VLMEvaluator(ABC):
             valid = [(img, p) for img, p in zip(images, prompts) if img is not None]
             if valid:
                 valid_imgs, valid_prompts = zip(*valid)
-                outputs = self.generate_batch(list(valid_imgs), list(valid_prompts))
+                outputs = self.generate_batch(
+                    list(valid_imgs),
+                    list(valid_prompts),
+                    max_new_tokens=max_new_tokens,
+                )
             else:
                 outputs = [""] * bs
 
@@ -658,6 +683,8 @@ class VLMEvaluator(ABC):
             "model_name": self.model_name,
             "param_count": self.param_count,
             "dataset": dataset_name,
+            "prompt_strategy": prompt_strategy,
+            "generation_max_new_tokens": max_new_tokens,
             "accuracy": correct / total if total else 0,
             "parse_failure_rate": parse_failures / total if total else 0,
             "parse_failures": parse_failures,

@@ -1,0 +1,28 @@
+# VCR reference models. Run separately from small models because these are
+# more expensive and may require API keys or larger GPU memory.
+experiment_name: vcr_reference
+dataset: vcr
+vcr_dir: /workspace/data/vcr
+max_samples: null
+subset_pct: null
+seed: 42
+device: cuda
+deterministic: true
+batch_size: 1
+max_new_tokens: 8
+prompt_strategy: zero_shot_direct
+output_dir: results
+csv_path: results/baselines_vcr_reference.csv
+
+wandb: true
+wandb_project: small-vlm-reasoning-vcr
+wandb_group: vcr-reference
+wandb_tags:
+  - vcr
+  - full
+  - reference
+
+models:
+  - name: llava-1.5-13b
+    quantization: 8bit
+  - name: gpt-4o

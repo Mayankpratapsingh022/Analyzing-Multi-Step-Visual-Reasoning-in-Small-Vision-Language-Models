@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import multiprocessing as mp
@@ -42,6 +43,7 @@ import yaml
 from src.data_loader import get_dataset
 from src.logger import setup_logger, format_time
 from src.models import get_evaluator, list_evaluators
+from src.reproducibility import collect_environment_metadata, set_reproducibility
 
 
 log = logging.getLogger("vlm-eval")
@@ -93,6 +95,81 @@ def log_system_info():
     log.info("")
 
 
+def make_run_key(
+    dataset_name: str,
+    seed: int,
+    subset_pct: Optional[float],
+    max_samples: Optional[int],
+    prompt_strategy: str,
+    max_new_tokens: int,
+) -> str:
+    """Short stable key for checkpoint isolation."""
+    payload = {
+        "dataset": dataset_name,
+        "seed": seed,
+        "subset_pct": subset_pct,
+        "max_samples": max_samples,
+        "prompt_strategy": prompt_strategy,
+        "max_new_tokens": max_new_tokens,
+    }
+    digest = hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:8]
+    sample = f"n{max_samples}" if max_samples is not None else (
+        f"pct{subset_pct}" if subset_pct is not None else "full"
+    )
+    return f"{sample}_{prompt_strategy}_tok{max_new_tokens}_{digest}"
+
+
+def init_wandb_run(
+    enabled: bool,
+    project: Optional[str],
+    entity: Optional[str],
+    group: Optional[str],
+    run_name: Optional[str],
+    tags: Optional[list[str]],
+    config: dict,
+):
+    """Initialize a Weights & Biases run when requested."""
+    if not enabled:
+        return None
+
+    try:
+        import wandb
+    except ImportError as exc:
+        raise RuntimeError("wandb logging requested, but wandb is not installed.") from exc
+
+    mode = os.environ.get("WANDB_MODE", "online")
+    return wandb.init(
+        project=project or "small-vlm-reasoning",
+        entity=entity,
+        group=group,
+        name=run_name,
+        tags=tags or [],
+        config=config,
+        mode=mode,
+    )
+
+
+def log_wandb_results(wandb_run, results: dict, detail_path: Path) -> None:
+    """Log summary metrics and the full result JSON as a W&B artifact."""
+    if wandb_run is None:
+        return
+
+    import wandb
+
+    numeric_metrics = {
+        k: v
+        for k, v in results.items()
+        if isinstance(v, (int, float)) and k not in {"seed"}
+    }
+    prefixed = {f"eval/{k}": v for k, v in numeric_metrics.items()}
+    wandb.log(prefixed)
+    wandb_run.summary.update(prefixed)
+
+    artifact = wandb.Artifact(results["run_id"], type="evaluation-results")
+    artifact.add_file(str(detail_path))
+    wandb_run.log_artifact(artifact)
+
+
 def run_single_evaluation(
     model_name: str,
     dataset_name: str,
@@ -106,6 +183,15 @@ def run_single_evaluation(
     output_dir: str = "results",
     restart: bool = False,
     batch_size: int = 0,
+    deterministic: bool = True,
+    max_new_tokens: int = 8,
+    prompt_strategy: str = "zero_shot_direct",
+    wandb_enabled: bool = False,
+    wandb_project: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
+    wandb_group: Optional[str] = None,
+    wandb_run_name: Optional[str] = None,
+    wandb_tags: Optional[list[str]] = None,
 ) -> dict:
     """Evaluate a single model on a single dataset. Returns results dict.
 
@@ -120,6 +206,17 @@ def run_single_evaluation(
                  Ignored for other datasets.
     """
     run_id = f"{model_name}_{dataset_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_key = make_run_key(
+        dataset_name=dataset_name,
+        seed=seed,
+        subset_pct=subset_pct,
+        max_samples=max_samples,
+        prompt_strategy=prompt_strategy,
+        max_new_tokens=max_new_tokens,
+    )
+
+    set_reproducibility(seed, deterministic=deterministic)
+    env_metadata = collect_environment_metadata()
 
     # Build a human-readable sample description for the log header
     if max_samples is not None:
@@ -141,8 +238,41 @@ def run_single_evaluation(
     log.info(f"  Seed         : {seed}")
     log.info(f"  Device       : {device}")
     log.info(f"  Output dir   : {output_dir}")
+    log.info(f"  Run key      : {run_key}")
+    log.info(f"  Deterministic: {deterministic}")
+    log.info(f"  Prompt strat.: {prompt_strategy}")
+    log.info(f"  Max tokens   : {max_new_tokens}")
+    log.info(f"  Git commit   : {env_metadata.get('git_commit', '')}")
+    log.info(f"  Git dirty    : {env_metadata.get('git_dirty', None)}")
     log.info(f"{'#'*70}")
     log.info("")
+
+    wandb_run = init_wandb_run(
+        enabled=wandb_enabled,
+        project=wandb_project,
+        entity=wandb_entity,
+        group=wandb_group,
+        run_name=wandb_run_name or run_id,
+        tags=wandb_tags,
+        config={
+            "run_id": run_id,
+            "run_key": run_key,
+            "model_name": model_name,
+            "dataset_name": dataset_name,
+            "vcr_dir": vcr_dir,
+            "subset_pct": subset_pct,
+            "max_samples": max_samples,
+            "subject": subject,
+            "quantization": quantization or "none",
+            "seed": seed,
+            "device": device,
+            "batch_size": batch_size,
+            "deterministic": deterministic,
+            "max_new_tokens": max_new_tokens,
+            "prompt_strategy": prompt_strategy,
+            "environment": env_metadata,
+        },
+    )
 
     # ---- Load model ----
     evaluator = get_evaluator(model_name)
@@ -167,7 +297,7 @@ def run_single_evaluation(
     if dataset_name == "vcr":
         dataset = get_dataset(
             "vcr", vcr_dir=vcr_dir, split="val",
-            subset_pct=subset_pct, seed=seed,
+            subset_pct=subset_pct, max_samples=max_samples, seed=seed,
         )
     elif dataset_name in ("mmmu", "mathvista"):
         ds_kwargs = {"subset_pct": subset_pct, "max_samples": max_samples, "seed": seed}
@@ -189,21 +319,27 @@ def run_single_evaluation(
     if dataset_name == "vcr":
         results = evaluator.evaluate_vcr(
             dataset, split="val", subset_pct=subset_pct, seed=seed,
-            run_id=run_id, restart=restart, batch_size=batch_size,
+            max_samples=max_samples, run_id=run_id, run_key=run_key,
+            restart=restart, batch_size=batch_size,
+            max_new_tokens=max_new_tokens, prompt_strategy=prompt_strategy,
         )
     else:
         results = evaluator.evaluate_mcq(
             dataset, dataset_name=dataset_name, seed=seed,
-            run_id=run_id, restart=restart, batch_size=batch_size,
+            run_id=run_id, run_key=run_key, restart=restart, batch_size=batch_size,
+            max_new_tokens=max_new_tokens, prompt_strategy=prompt_strategy,
         )
 
     # ---- Add metadata ----
     results["run_id"] = run_id
+    results["run_key"] = run_key
     results["quantization"] = quantization or "none"
     results["device"] = device
     results["load_time_sec"] = load_time
     results["vram_gb"] = get_vram_usage()
     results["vram_model_gb"] = round(vram_after - vram_before, 2)
+    results["deterministic"] = deterministic
+    results["environment"] = env_metadata
     results["timestamp"] = datetime.now().isoformat()
 
     # ---- Save per-example results ----
@@ -212,6 +348,10 @@ def run_single_evaluation(
     with open(detail_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
     log.info(f"Per-example results saved to: {detail_path}")
+
+    log_wandb_results(wandb_run, results, detail_path)
+    if wandb_run is not None:
+        wandb_run.finish()
 
     # ---- Free GPU memory ----
     # API-only evaluators (gpt-4o, claude) have no .model attribute
@@ -231,8 +371,9 @@ def append_to_csv(results: dict, csv_path: str = "results/baselines.csv"):
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
 
     fieldnames = [
-        "run_id", "model_name", "param_count", "quantization",
-        "dataset", "split", "subset_pct", "num_examples",
+        "run_id", "run_key", "model_name", "param_count", "quantization",
+        "dataset", "split", "subset_pct", "max_samples", "num_examples",
+        "prompt_strategy", "generation_max_new_tokens", "deterministic",
         "q_a_accuracy", "qa_r_accuracy", "q_ar_accuracy",  # VCR
         "accuracy",  # MMMU/MathVista
         "parse_failure_rate",
@@ -270,7 +411,7 @@ def render_baselines_table(csv_path: str, png_path: str) -> None:
     df = pd.read_csv(csv_path)
     display_cols = [
         "run_id", "model_name", "param_count", "quantization",
-        "dataset", "num_examples",
+        "dataset", "num_examples", "prompt_strategy",
         "q_a_accuracy", "qa_r_accuracy", "q_ar_accuracy", "accuracy",
         "parse_failure_rate", "avg_inference_time_sec",
         "wall_time_sec", "vram_model_gb", "timestamp",
@@ -384,6 +525,14 @@ def run_sweep(
             output_dir=kwargs.get("output_dir", "results"),
             restart=kwargs.get("restart", False),
             batch_size=kwargs.get("batch_size", 0),
+            deterministic=kwargs.get("deterministic", True),
+            max_new_tokens=kwargs.get("max_new_tokens", 8),
+            prompt_strategy=kwargs.get("prompt_strategy", "zero_shot_direct"),
+            wandb_enabled=kwargs.get("wandb_enabled", False),
+            wandb_project=kwargs.get("wandb_project"),
+            wandb_entity=kwargs.get("wandb_entity"),
+            wandb_group=kwargs.get("wandb_group"),
+            wandb_tags=kwargs.get("wandb_tags"),
         )
         csv_path = kwargs.get("csv_path", "results/baselines.csv")
 
@@ -467,6 +616,24 @@ def main():
                         help="Explicit log file path (default: auto-generated in logs/)")
     parser.add_argument("--batch_size", type=int, default=0,
                         help="Batch size for GPU inference. 0=auto-detect from VRAM, 1=sequential")
+    parser.add_argument("--max_new_tokens", type=int, default=8,
+                        help="Generation token limit for each MCQ answer call")
+    parser.add_argument("--prompt_strategy", type=str, default="zero_shot_direct",
+                        help="Prompt strategy label stored with results")
+    parser.add_argument("--no_deterministic", action="store_true",
+                        help="Disable deterministic CUDA settings")
+    parser.add_argument("--wandb", action="store_true",
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default=None,
+                        help="W&B project name")
+    parser.add_argument("--wandb_entity", type=str, default=None,
+                        help="W&B entity/team")
+    parser.add_argument("--wandb_group", type=str, default=None,
+                        help="W&B run group")
+    parser.add_argument("--wandb_run_name", type=str, default=None,
+                        help="Explicit W&B run name for single-model runs")
+    parser.add_argument("--wandb_tags", nargs="*", default=None,
+                        help="Optional W&B tags")
     parser.add_argument("--restart", action="store_true",
                         help="Ignore existing checkpoint and start fresh")
     parser.add_argument("--verbose", action="store_true",
@@ -517,6 +684,14 @@ def main():
             csv_path=args.csv_path,
             restart=args.restart,
             batch_size=args.batch_size,
+            deterministic=not args.no_deterministic,
+            max_new_tokens=args.max_new_tokens,
+            prompt_strategy=args.prompt_strategy,
+            wandb_enabled=args.wandb,
+            wandb_project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
+            wandb_group=args.wandb_group,
+            wandb_tags=args.wandb_tags,
         )
     elif args.model:
         results = run_single_evaluation(
@@ -532,6 +707,15 @@ def main():
             output_dir=args.output_dir,
             restart=args.restart,
             batch_size=args.batch_size,
+            deterministic=not args.no_deterministic,
+            max_new_tokens=args.max_new_tokens,
+            prompt_strategy=args.prompt_strategy,
+            wandb_enabled=args.wandb,
+            wandb_project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
+            wandb_group=args.wandb_group,
+            wandb_run_name=args.wandb_run_name,
+            wandb_tags=args.wandb_tags,
         )
         append_to_csv(results, args.csv_path)
     else:

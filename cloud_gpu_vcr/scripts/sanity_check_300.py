@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import json
 import random
 from pathlib import Path
@@ -94,8 +93,12 @@ def main() -> None:
         run_id = r["run_id"]
         details_path = find_details_for(run_id, results_dir)
 
-        ci_qa = ci_r = ci_qar = ("?", "?")
+        ci_qa: tuple[float, float] = (0.0, 0.0)
+        ci_r: tuple[float, float] = (0.0, 0.0)
+        ci_qar: tuple[float, float] = (0.0, 0.0)
+        have_details = False
         if details_path and details_path.exists():
+            have_details = True
             with open(details_path) as f:
                 details = json.load(f)
             examples = details.get("per_example", [])
@@ -121,9 +124,9 @@ def main() -> None:
         scale = args.target_n / 300.0
         eta_hrs = wall * scale / 3600.0 if wall == wall else float("nan")
 
-        qa_str = f"{fmt_pct(q_a)} {fmt_ci(*ci_qa) if isinstance(ci_qa[0], float) else ''}"
-        r_str = f"{fmt_pct(qa_r)} {fmt_ci(*ci_r) if isinstance(ci_r[0], float) else ''}"
-        qar_str = f"{fmt_pct(q_ar)} {fmt_ci(*ci_qar) if isinstance(ci_qar[0], float) else ''}"
+        qa_str = f"{fmt_pct(q_a)} {fmt_ci(*ci_qa)}" if have_details else fmt_pct(q_a)
+        r_str = f"{fmt_pct(qa_r)} {fmt_ci(*ci_r)}" if have_details else fmt_pct(qa_r)
+        qar_str = f"{fmt_pct(q_ar)} {fmt_ci(*ci_qar)}" if have_details else fmt_pct(q_ar)
 
         print(
             f"{model:<16}  {qa_str:<22}  {r_str:<22}  {qar_str:<22}  "

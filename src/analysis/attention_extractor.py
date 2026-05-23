@@ -75,7 +75,10 @@ def load_qwen2vl_eager(
     fine for qwen2-vl-2b on a single-example forward pass.
     """
     if dtype is None:
-        dtype = torch.float16 if "cuda" in device else torch.float32
+        if "cuda" in device and torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            dtype = torch.bfloat16
+        else:
+            dtype = torch.float32
 
     processor = AutoProcessor.from_pretrained(hf_id)
     model = Qwen2VLForConditionalGeneration.from_pretrained(
@@ -169,13 +172,34 @@ def extract_attention_qwen2vl(
         heatmap = heatmap[0]
     else:
         heatmap = heatmap.sum(axis=0)
+    heatmap = heatmap.astype(np.float32)
+
+    finite_mask = np.isfinite(heatmap)
+    finite_fraction = float(finite_mask.mean())
+    if not finite_mask.any():
+        raise RuntimeError(
+            "attention heatmap contains no finite values. This usually happens when "
+            "eager attention is run in fp16; rerun with bf16 or fp32."
+        )
+    if finite_fraction < 0.99:
+        raise RuntimeError(
+            f"attention heatmap has too many non-finite values "
+            f"({finite_fraction:.3%} finite). Rerun with bf16 or fp32."
+        )
+    if finite_fraction < 1.0:
+        heatmap = np.nan_to_num(heatmap, nan=0.0, posinf=0.0, neginf=0.0)
 
     logits = outputs.logits[0, -1]
+    if not torch.isfinite(logits).all():
+        raise RuntimeError(
+            "model logits contain non-finite values. This usually happens when "
+            "eager attention is run in fp16; rerun with bf16 or fp32."
+        )
     pred_id = int(logits.argmax().item())
     predicted_token = processor.tokenizer.decode([pred_id])
 
     return AttentionResult(
-        heatmap=heatmap.astype(np.float32),
+        heatmap=heatmap,
         patch_grid_hw=(h_out, w_out),
         predicted_token=predicted_token,
         last_query_pos=last_query_pos,
@@ -186,10 +210,14 @@ def extract_attention_qwen2vl(
 
 def normalize_heatmap(heatmap: np.ndarray) -> np.ndarray:
     """Min-max scale into [0, 1] for visualization. Returns float32."""
-    lo, hi = float(heatmap.min()), float(heatmap.max())
+    finite = heatmap[np.isfinite(heatmap)]
+    if finite.size == 0:
+        return np.zeros_like(heatmap, dtype=np.float32)
+    lo, hi = float(finite.min()), float(finite.max())
     if hi - lo < 1e-12:
         return np.zeros_like(heatmap, dtype=np.float32)
-    return ((heatmap - lo) / (hi - lo)).astype(np.float32)
+    normalized = (heatmap - lo) / (hi - lo)
+    return np.nan_to_num(normalized, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32)
 
 
 def upsample_heatmap_to_image(heatmap: np.ndarray, image_size_wh: tuple[int, int]) -> np.ndarray:

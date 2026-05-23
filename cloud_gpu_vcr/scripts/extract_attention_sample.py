@@ -41,6 +41,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +61,30 @@ DEFAULT_HF_DATASET_ID = "JaydeepR/vcr-mirror"
 HF_ANNOT_PREFIX = "vcr1annots"
 HF_IMAGE_PREFIX = "vcr1images/vcr1images"
 HF_WAVE2_RESULTS_PREFIX = "wave2_latest/results"
+
+
+def parse_torch_dtype(name: str, device: str) -> torch.dtype | None:
+    value = name.lower()
+    if value == "auto":
+        return None
+    if value in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if value in {"fp16", "float16", "half"}:
+        return torch.float16
+    if value in {"fp32", "float32"}:
+        return torch.float32
+    raise SystemExit(
+        f"unsupported --dtype {name!r}; use auto, bf16, fp16, or fp32"
+    )
+
+
+def heatmap_stats(heatmap: np.ndarray) -> dict:
+    finite = heatmap[np.isfinite(heatmap)]
+    return {
+        "heatmap_min": float(finite.min()) if finite.size else None,
+        "heatmap_max": float(finite.max()) if finite.size else None,
+        "heatmap_finite_fraction": float(np.isfinite(heatmap).mean()),
+    }
 
 
 def find_details_file(results_dir: Path, model_name: str, num_examples: int) -> Path | None:
@@ -329,6 +354,15 @@ def main() -> None:
     p.add_argument("--n-incorrect", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cuda")
+    p.add_argument(
+        "--dtype",
+        default="auto",
+        choices=["auto", "bf16", "bfloat16", "fp16", "float16", "fp32", "float32"],
+        help=(
+            "Model dtype for eager attention. Use bf16 on RTX 4090/A100-class GPUs; "
+            "fp16 can produce NaN attention maps."
+        ),
+    )
     args = p.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -385,8 +419,10 @@ def main() -> None:
             by_annot[a["annot_id"]] = i
     print(f"[attn-sample] resolved {len(by_annot)}/{len(annot_ids)} annot_ids in val split")
 
-    print(f"[attn-sample] loading {args.model} (eager attention) on {args.device}")
-    model, processor = load_qwen2vl_eager(args.hf_id, device=args.device)
+    dtype = parse_torch_dtype(args.dtype, args.device)
+    dtype_name = "auto" if dtype is None else str(dtype).replace("torch.", "")
+    print(f"[attn-sample] loading {args.model} (eager attention) on {args.device}, dtype={dtype_name}")
+    model, processor = load_qwen2vl_eager(args.hf_id, device=args.device, dtype=dtype)
 
     sample_records = []
     panel_paths = []
@@ -450,16 +486,14 @@ def main() -> None:
                 "patch_grid_hw": list(res_qa.patch_grid_hw),
                 "num_image_tokens": res_qa.num_image_tokens,
                 "num_layers_used": res_qa.num_layers_used,
-                "heatmap_min": float(res_qa.heatmap.min()),
-                "heatmap_max": float(res_qa.heatmap.max()),
+                **heatmap_stats(res_qa.heatmap),
             },
             "qar": {
                 "predicted_next_token": res_qar.predicted_token,
                 "patch_grid_hw": list(res_qar.patch_grid_hw),
                 "num_image_tokens": res_qar.num_image_tokens,
                 "num_layers_used": res_qar.num_layers_used,
-                "heatmap_min": float(res_qar.heatmap.min()),
-                "heatmap_max": float(res_qar.heatmap.max()),
+                **heatmap_stats(res_qar.heatmap),
             },
             "panel_files": [str(qa_path.name), str(qar_path.name)],
         })

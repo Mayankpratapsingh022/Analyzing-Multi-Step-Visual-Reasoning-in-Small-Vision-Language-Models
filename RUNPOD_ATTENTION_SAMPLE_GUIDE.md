@@ -55,7 +55,8 @@ Run the mentor-requested 10-example attention sample:
 ```bash
 python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --prepare-from-hf \
-  --num-examples 10
+  --num-examples 10 \
+  --dtype bf16
 ```
 
 Check outputs:
@@ -220,7 +221,8 @@ Expected selected asset count is usually up to `2 * num_examples`: one image and
 ```bash
 python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --prepare-from-hf \
-  --num-examples 10
+  --num-examples 10 \
+  --dtype bf16
 ```
 
 This command performs the same minimal restore, then runs attention extraction.
@@ -243,6 +245,7 @@ python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --vcr-dir /workspace/data/vcr \
   --results-dir results \
   --num-examples 10 \
+  --dtype bf16 \
   --seed 42
 ```
 
@@ -274,8 +277,10 @@ Recommended visual checks before sending to the mentor:
 - `attention_sample.png` exists and is non-empty.
 - The grid contains the requested number of examples.
 - Examples are split evenly across correct and incorrect cases.
+- `sample_metadata.json` reports `heatmap_finite_fraction: 1.0` for every QA and QA-R map.
+- `heatmap_min` and `heatmap_max` are finite numbers, not `NaN`.
 - Both Q->A and QA->R panels are present where expected.
-- Heatmaps align with plausible image regions rather than blank/constant maps.
+- Heatmaps align with plausible image regions rather than blank, constant, or uniform-purple maps.
 - No obvious image-path failures or missing-image placeholders appear.
 
 ## 7. Back Up The Sample To Hugging Face
@@ -332,6 +337,21 @@ python cloud_gpu_vcr/scripts/extract_attention_sample.py \
 ```
 
 That older message came from a slower implementation that used `snapshot_download` and could spend a long time scanning the large raw-file HF dataset. The newer script lists only `wave2_latest/results/` and downloads the matching details JSON directly.
+
+If the generated attention panels look like a uniform purple/blue tint and the metadata contains `NaN` heatmap values, the run is invalid. Pull the latest code and rerun with bf16 eager attention:
+
+```bash
+git pull
+
+rm -rf results/attention_sample
+
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 10 \
+  --dtype bf16
+```
+
+On GPUs without bf16 support, use `--dtype fp32` instead, but expect higher VRAM use.
 
 ## 10. Next Deliverable After The Sample
 

@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import random
@@ -119,13 +120,13 @@ def copy_if_needed(src: Path, dst: Path) -> None:
 
 def get_hf_downloaders():
     try:
-        from huggingface_hub import hf_hub_download, snapshot_download
+        from huggingface_hub import HfApi, hf_hub_download
     except ImportError as exc:
         raise SystemExit(
             "huggingface_hub is required for --prepare-from-hf. "
             "Run cloud_gpu_vcr/scripts/bootstrap_cloud.sh first."
         ) from exc
-    return hf_hub_download, snapshot_download
+    return HfApi, hf_hub_download
 
 
 def ensure_details_from_hf(
@@ -142,16 +143,33 @@ def ensure_details_from_hf(
         print(f"[attn-sample] details already present: {existing}")
         return existing
 
-    _, snapshot_download = get_hf_downloaders()
+    HfApi, hf_hub_download = get_hf_downloaders()
     pattern = f"{HF_WAVE2_RESULTS_PREFIX}/{model_name}_*details*.json"
-    print(f"[attn-sample] downloading details JSON pattern from HF: {pattern}")
-    snapshot_download(
-        repo_id=hf_dataset_id,
-        repo_type="dataset",
-        allow_patterns=[pattern],
-        local_dir=str(hf_raw_dir),
-        token=token,
-    )
+    print(f"[attn-sample] finding details JSON in HF folder: {HF_WAVE2_RESULTS_PREFIX}")
+    api = HfApi(token=token)
+    matches = sorted([
+        item.path
+        for item in api.list_repo_tree(
+            repo_id=hf_dataset_id,
+            repo_type="dataset",
+            path_in_repo=HF_WAVE2_RESULTS_PREFIX,
+            recursive=False,
+        )
+        if fnmatch.fnmatch(item.path, pattern)
+    ])
+    if not matches:
+        raise SystemExit(f"no HF details JSON matched pattern: {pattern}")
+
+    print(f"[attn-sample] downloading {len(matches)} matching details JSON file(s)")
+    for match in matches:
+        print(f"[attn-sample]   {match}")
+        hf_hub_download(
+            repo_id=hf_dataset_id,
+            repo_type="dataset",
+            filename=match,
+            local_dir=str(hf_raw_dir),
+            token=token,
+        )
 
     results_dir.mkdir(parents=True, exist_ok=True)
     for src in sorted((hf_raw_dir / HF_WAVE2_RESULTS_PREFIX).glob(f"{model_name}_*details*.json")):
@@ -178,7 +196,7 @@ def ensure_val_annotations_from_hf(
         print(f"[attn-sample] annotations already present: {target}")
         return target
 
-    hf_hub_download, _ = get_hf_downloaders()
+    _, hf_hub_download = get_hf_downloaders()
     filename = f"{HF_ANNOT_PREFIX}/{split}.jsonl"
     print(f"[attn-sample] downloading annotation file from HF: {filename}")
     downloaded = Path(
@@ -233,7 +251,7 @@ def prepare_picked_vcr_files_from_hf(
     if not missing:
         return
 
-    hf_hub_download, _ = get_hf_downloaders()
+    _, hf_hub_download = get_hf_downloaders()
     failures: list[tuple[str, str]] = []
     for i, (rel, dst) in enumerate(sorted(missing.items()), 1):
         filename = f"{HF_IMAGE_PREFIX}/{rel}"

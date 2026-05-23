@@ -313,7 +313,27 @@ Do not run the old full mirror download for this sample:
 # hf download JaydeepR/vcr-mirror --repo-type dataset --local-dir /workspace/data/vcr_raw
 ```
 
-## 9. Next Deliverable After The Sample
+## 9. Troubleshooting
+
+If the run pauses for many minutes at this line:
+
+```text
+[attn-sample] downloading details JSON pattern from HF: wave2_latest/results/qwen2-vl-2b_*details*.json
+```
+
+stop it with `Ctrl+C`, pull the latest code, and rerun:
+
+```bash
+git pull
+
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 10
+```
+
+That older message came from a slower implementation that used `snapshot_download` and could spend a long time scanning the large raw-file HF dataset. The newer script lists only `wave2_latest/results/` and downloads the matching details JSON directly.
+
+## 10. Next Deliverable After The Sample
 
 After the sample is generated and visually checked, prepare a failure-attribution criteria spec for mentor sign-off.
 

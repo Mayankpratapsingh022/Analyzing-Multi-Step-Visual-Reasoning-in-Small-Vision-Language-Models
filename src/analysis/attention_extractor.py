@@ -1,11 +1,11 @@
 """
 Attention extraction for decoder-only vision-language models.
 
-Captures the slice of self-attention from the last (next-prediction) token
+Captures self-attention-derived scores from the last (next-prediction) token
 position to visual-token positions. In decoder-only VLMs like Qwen2-VL and
-LLaVA there is no separate cross-attention module — visual tokens live in the
-main sequence and attention to them is the operational equivalent of
-"vision-language cross-attention."
+LLaVA there is no separate cross-attention module; visual tokens live in the
+main sequence, so text-to-visual self-attention is the available proxy for
+vision-language grounding.
 
 Per the mentor's guidance, we (a) average across attention heads and
 (b) optionally focus on the late-stage layers, since these matrices become
@@ -13,7 +13,7 @@ massive and the late layers tend to carry the most interpretable signal for
 prediction-time grounding.
 
 Currently implemented: Qwen2-VL family (qwen2-vl-2b, qwen2-vl-7b). The same
-pattern extends to LLaVA-NEXT but is left for a follow-up — start with one
+pattern extends to LLaVA-NEXT but is left for a follow-up: start with one
 clean family.
 """
 
@@ -34,6 +34,12 @@ DEFAULT_LATE_LAYER_FRACTION = 0.75
 0.75 means: take only the last 25% of layers. Mentor's guidance was to focus
 on late-stage layers for interpretability. Override per experiment.
 """
+
+DEFAULT_BASELINE_PROMPT = (
+    "Look at the image. Answer with only the letter A, B, C, or D."
+)
+
+ATTENTION_METHODS = {"raw", "rollout", "contrastive_rollout"}
 
 
 @dataclass
@@ -61,6 +67,15 @@ class AttentionResult:
 
     num_layers_used: int
     """How many late-stage layers were averaged."""
+
+    method: str
+    """Attention scoring method used to produce `heatmap`."""
+
+    image_attention_mass: float
+    """Total unnormalized attention mass assigned to image tokens."""
+
+    diagnostics: dict
+    """Quality checks for suspicious artifacts such as border-dominated maps."""
 
 
 def load_qwen2vl_eager(
@@ -113,32 +128,41 @@ def _build_chat_text(processor, image: Image.Image, prompt: str) -> str:
     )
 
 
-def extract_attention_qwen2vl(
+def _forward_qwen2vl(
     model: Qwen2VLForConditionalGeneration,
     processor: "AutoProcessor",
     image: Image.Image,
     prompt: str,
-    late_layer_fraction: float = DEFAULT_LATE_LAYER_FRACTION,
-) -> AttentionResult:
-    """Run one forward pass and pull out the prediction-position attention to image tokens.
-
-    The forward pass uses `output_attentions=True`. We compute the attention
-    averaged across heads, averaged across the late layers, slice the last
-    query row, and project that onto the visual-token positions.
-    """
+):
     text = _build_chat_text(processor, image, prompt)
     inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model(**inputs, output_attentions=True, use_cache=False)
+    return inputs, outputs
 
-    attentions = outputs.attentions
+
+def _selected_attention_layers(
+    attentions: tuple[torch.Tensor, ...],
+    late_layer_fraction: float,
+) -> tuple[list[torch.Tensor], int]:
     num_layers = len(attentions)
     late_start = int(num_layers * late_layer_fraction)
     late_start = min(late_start, num_layers - 1)
     selected_layers = attentions[late_start:]
 
+    head_means = []
+    for attn in selected_layers:
+        layer = attn[0].mean(dim=0).to(torch.float32)
+        head_means.append(torch.nan_to_num(layer, nan=0.0, posinf=0.0, neginf=0.0))
+    return head_means, late_start
+
+
+def _visual_token_layout(
+    model: Qwen2VLForConditionalGeneration,
+    inputs: dict,
+) -> tuple[torch.Tensor, tuple[int, int], int]:
     image_token_id = model.config.image_token_id
     input_ids = inputs["input_ids"][0]
     image_positions = (input_ids == image_token_id).nonzero(as_tuple=True)[0]
@@ -147,40 +171,109 @@ def extract_attention_qwen2vl(
             "no image tokens found in input_ids; processor or model id may be wrong"
         )
 
-    last_query_pos = int(input_ids.shape[0]) - 1
-
-    # average each layer over heads, then average the late layers, then take the
-    # last query row. doing the head-mean per layer keeps the temporary tensor small.
-    head_means = []
-    for attn in selected_layers:
-        head_means.append(attn[0].mean(dim=0).to(torch.float32))
-    layer_stack = torch.stack(head_means, dim=0)
-    avg_attn = layer_stack.mean(dim=0)
-    img_attn = avg_attn[last_query_pos, image_positions].cpu().numpy()
-
     grid_thw = inputs["image_grid_thw"][0].cpu().numpy()
     t_grid = int(grid_thw[0])
     h_grid = int(grid_thw[1])
     w_grid = int(grid_thw[2])
-    # Qwen2-VL applies a 2x2 spatial merge before the LLM, so the visual token
-    # grid the LLM sees is half the resolution of the ViT patch grid in each
-    # spatial dim.
-    h_out = h_grid // 2
-    w_out = w_grid // 2
+    vision_config = getattr(model.config, "vision_config", None)
+    if isinstance(vision_config, dict):
+        spatial_merge_size = vision_config.get("spatial_merge_size", 2)
+    else:
+        spatial_merge_size = getattr(vision_config, "spatial_merge_size", 2)
+    h_out = h_grid // spatial_merge_size
+    w_out = w_grid // spatial_merge_size
     expected = t_grid * h_out * w_out
-    if img_attn.size != expected:
+    if int(image_positions.numel()) != expected:
         raise RuntimeError(
-            f"image-token count mismatch: got {img_attn.size}, "
+            f"image-token count mismatch: got {int(image_positions.numel())}, "
             f"expected t_grid*h_merged*w_merged = {t_grid}*{h_out}*{w_out} = {expected}"
         )
+    return image_positions, (h_out, w_out), t_grid
 
-    heatmap = img_attn.reshape(t_grid, h_out, w_out)
+
+def _rollout_scores(
+    head_means: list[torch.Tensor],
+    target_pos: int,
+    image_positions: torch.Tensor,
+) -> torch.Tensor:
+    seq_len = head_means[0].shape[-1]
+    eye = torch.eye(seq_len, device=head_means[0].device, dtype=torch.float32)
+    rollout = eye
+    for attn in head_means:
+        attn = attn + eye
+        attn = attn / attn.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        rollout = attn @ rollout
+    return rollout[target_pos, image_positions]
+
+
+def _raw_scores(
+    head_means: list[torch.Tensor],
+    target_pos: int,
+    image_positions: torch.Tensor,
+) -> torch.Tensor:
+    avg_attn = torch.stack(head_means, dim=0).mean(dim=0)
+    return avg_attn[target_pos, image_positions]
+
+
+def _scores_to_heatmap(
+    scores: torch.Tensor,
+    patch_grid_hw: tuple[int, int],
+    t_grid: int,
+    spatial_normalize: bool = True,
+) -> tuple[np.ndarray, float]:
+    scores = torch.nan_to_num(scores.to(torch.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    scores = scores.clamp_min(0.0)
+    image_attention_mass = float(scores.sum().item())
+    if spatial_normalize and image_attention_mass > 0:
+        scores = scores / image_attention_mass
+
+    h_out, w_out = patch_grid_hw
+    heatmap = scores.detach().cpu().numpy().reshape(t_grid, h_out, w_out)
     if t_grid == 1:
         heatmap = heatmap[0]
     else:
         heatmap = heatmap.sum(axis=0)
-    heatmap = heatmap.astype(np.float32)
+    return heatmap.astype(np.float32), image_attention_mass
 
+
+def _attention_heatmap_from_forward(
+    model: Qwen2VLForConditionalGeneration,
+    inputs: dict,
+    outputs,
+    method: str,
+    late_layer_fraction: float,
+    spatial_normalize: bool,
+) -> tuple[np.ndarray, tuple[int, int], int, int, float, int]:
+    if method not in {"raw", "rollout"}:
+        raise ValueError(f"internal method must be raw or rollout, got {method!r}")
+
+    image_positions, patch_grid_hw, t_grid = _visual_token_layout(model, inputs)
+    input_ids = inputs["input_ids"][0]
+    target_pos = int(input_ids.shape[0]) - 1
+    head_means, _ = _selected_attention_layers(outputs.attentions, late_layer_fraction)
+
+    if method == "rollout":
+        scores = _rollout_scores(head_means, target_pos, image_positions)
+    else:
+        scores = _raw_scores(head_means, target_pos, image_positions)
+
+    heatmap, image_attention_mass = _scores_to_heatmap(
+        scores,
+        patch_grid_hw,
+        t_grid,
+        spatial_normalize=spatial_normalize,
+    )
+    return (
+        heatmap,
+        patch_grid_hw,
+        target_pos,
+        len(head_means),
+        image_attention_mass,
+        int(image_positions.numel()),
+    )
+
+
+def _validate_heatmap(heatmap: np.ndarray) -> np.ndarray:
     finite_mask = np.isfinite(heatmap)
     finite_fraction = float(finite_mask.mean())
     if not finite_mask.any():
@@ -195,6 +288,150 @@ def extract_attention_qwen2vl(
         )
     if finite_fraction < 1.0:
         heatmap = np.nan_to_num(heatmap, nan=0.0, posinf=0.0, neginf=0.0)
+    return heatmap.astype(np.float32)
+
+
+def heatmap_diagnostics(heatmap: np.ndarray, border_width: int = 1) -> dict:
+    """Return lightweight quality checks for a spatial attention map."""
+    finite = np.nan_to_num(heatmap.astype(np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    finite = finite - finite.min()
+    total = float(finite.sum())
+    h, w = finite.shape
+    result = {
+        "heatmap_min": float(np.nanmin(heatmap)),
+        "heatmap_max": float(np.nanmax(heatmap)),
+        "heatmap_finite_fraction": float(np.isfinite(heatmap).mean()),
+        "border_width": int(border_width),
+    }
+    if total <= 0:
+        result.update({
+            "border_mass": None,
+            "border_area_fraction": None,
+            "normalized_entropy": None,
+            "peak_to_mean": None,
+            "top_patch_yx": None,
+            "quality_warning": "empty_or_constant_heatmap",
+        })
+        return result
+
+    bw = max(0, min(int(border_width), h // 2, w // 2))
+    border_mask = np.zeros((h, w), dtype=bool)
+    if bw > 0:
+        border_mask[:bw, :] = True
+        border_mask[-bw:, :] = True
+        border_mask[:, :bw] = True
+        border_mask[:, -bw:] = True
+    border_mass = float(finite[border_mask].sum() / total) if bw > 0 else 0.0
+    border_area_fraction = float(border_mask.mean()) if bw > 0 else 0.0
+
+    probs = finite.reshape(-1) / total
+    entropy = float(-(probs * np.log(probs + 1e-12)).sum() / np.log(probs.size))
+    mean = float(finite.mean())
+    peak_to_mean = float(finite.max() / mean) if mean > 0 else None
+    top_y, top_x = np.unravel_index(int(finite.argmax()), finite.shape)
+
+    warning = None
+    if bw > 0 and border_mass > max(0.35, border_area_fraction * 2.5):
+        warning = "border_dominated_heatmap"
+    elif entropy > 0.95:
+        warning = "nearly_uniform_heatmap"
+
+    result.update({
+        "border_mass": border_mass,
+        "border_area_fraction": border_area_fraction,
+        "normalized_entropy": entropy,
+        "peak_to_mean": peak_to_mean,
+        "top_patch_yx": [int(top_y), int(top_x)],
+        "quality_warning": warning,
+    })
+    return result
+
+
+def suppress_heatmap_border(heatmap: np.ndarray, border_width: int) -> np.ndarray:
+    """Zero edge patches for visualization-only ablations."""
+    bw = int(border_width)
+    if bw <= 0:
+        return heatmap
+    h, w = heatmap.shape
+    bw = min(bw, h // 2, w // 2)
+    suppressed = heatmap.copy()
+    suppressed[:bw, :] = 0
+    suppressed[-bw:, :] = 0
+    suppressed[:, :bw] = 0
+    suppressed[:, -bw:] = 0
+    if np.isfinite(suppressed).any() and float(np.nanmax(suppressed)) > 0:
+        return suppressed
+    return heatmap
+
+
+def extract_attention_qwen2vl(
+    model: Qwen2VLForConditionalGeneration,
+    processor: "AutoProcessor",
+    image: Image.Image,
+    prompt: str,
+    late_layer_fraction: float = DEFAULT_LATE_LAYER_FRACTION,
+    method: str = "contrastive_rollout",
+    baseline_prompt: str = DEFAULT_BASELINE_PROMPT,
+    spatial_normalize: bool = True,
+    suppress_border_patches: int = 0,
+) -> AttentionResult:
+    """Run one forward pass and pull out the prediction-position attention to image tokens.
+
+    The forward pass uses `output_attentions=True`. `raw` averages heads/layers
+    and slices the last query row. `rollout` composes attention through the
+    selected layers with residual connections. `contrastive_rollout` subtracts
+    a same-image neutral-prompt rollout map to reduce image-position priors.
+    """
+    if method not in ATTENTION_METHODS:
+        raise ValueError(
+            f"unsupported attention method {method!r}; "
+            f"expected one of {sorted(ATTENTION_METHODS)}"
+        )
+
+    inputs, outputs = _forward_qwen2vl(model, processor, image, prompt)
+    base_method = "rollout" if method == "contrastive_rollout" else method
+    (
+        heatmap,
+        patch_grid_hw,
+        last_query_pos,
+        num_layers_used,
+        image_attention_mass,
+        num_image_tokens,
+    ) = (
+        _attention_heatmap_from_forward(
+            model,
+            inputs,
+            outputs,
+            base_method,
+            late_layer_fraction,
+            spatial_normalize,
+        )
+    )
+
+    baseline_mass = None
+    if method == "contrastive_rollout":
+        baseline_inputs, baseline_outputs = _forward_qwen2vl(
+            model, processor, image, baseline_prompt
+        )
+        baseline_heatmap, baseline_grid_hw, _, _, baseline_mass, _ = (
+            _attention_heatmap_from_forward(
+                model,
+                baseline_inputs,
+                baseline_outputs,
+                "rollout",
+                late_layer_fraction,
+                spatial_normalize,
+            )
+        )
+        if baseline_grid_hw != patch_grid_hw:
+            raise RuntimeError(
+                f"baseline grid mismatch: prompt grid {patch_grid_hw}, "
+                f"baseline grid {baseline_grid_hw}"
+            )
+        heatmap = np.maximum(heatmap - baseline_heatmap, 0.0).astype(np.float32)
+
+    heatmap = _validate_heatmap(heatmap)
+    heatmap = suppress_heatmap_border(heatmap, suppress_border_patches)
 
     logits = outputs.logits[0, -1]
     if not torch.isfinite(logits).all():
@@ -207,11 +444,19 @@ def extract_attention_qwen2vl(
 
     return AttentionResult(
         heatmap=heatmap,
-        patch_grid_hw=(h_out, w_out),
+        patch_grid_hw=patch_grid_hw,
         predicted_token=predicted_token,
         last_query_pos=last_query_pos,
-        num_image_tokens=int(image_positions.numel()),
-        num_layers_used=len(selected_layers),
+        num_image_tokens=num_image_tokens,
+        num_layers_used=num_layers_used,
+        method=method,
+        image_attention_mass=image_attention_mass,
+        diagnostics={
+            **heatmap_diagnostics(heatmap),
+            "baseline_image_attention_mass": baseline_mass,
+            "spatial_normalized": spatial_normalize,
+            "suppressed_border_patches": int(suppress_border_patches),
+        },
     )
 
 

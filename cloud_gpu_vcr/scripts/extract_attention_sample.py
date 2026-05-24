@@ -25,6 +25,7 @@ This downloads only:
 Usage:
   python cloud_gpu_vcr/scripts/extract_attention_sample.py
   python cloud_gpu_vcr/scripts/extract_attention_sample.py --num-examples 100
+  python cloud_gpu_vcr/scripts/extract_attention_sample.py --attention-method raw
   python cloud_gpu_vcr/scripts/extract_attention_sample.py --n-correct 5 --n-incorrect 5
 """
 
@@ -317,6 +318,37 @@ def render_panel(image: Image.Image, heatmap: np.ndarray, title: str, subtitle: 
     return fig
 
 
+def attention_record(res) -> dict:
+    return {
+        "predicted_next_token": res.predicted_token,
+        "patch_grid_hw": list(res.patch_grid_hw),
+        "num_image_tokens": res.num_image_tokens,
+        "num_layers_used": res.num_layers_used,
+        "method": res.method,
+        "image_attention_mass": res.image_attention_mass,
+        **heatmap_stats(res.heatmap),
+        "diagnostics": res.diagnostics,
+    }
+
+
+def log_attention_diagnostics(label: str, res) -> None:
+    diag = res.diagnostics
+    warning = diag.get("quality_warning")
+    border_mass = diag.get("border_mass")
+    entropy = diag.get("normalized_entropy")
+    msg = (
+        f"  pred_token={res.predicted_token!r}  patch={res.patch_grid_hw} "
+        f"layers_used={res.num_layers_used} method={res.method}"
+    )
+    if border_mass is not None:
+        msg += f" border_mass={border_mass:.3f}"
+    if entropy is not None:
+        msg += f" entropy={entropy:.3f}"
+    print(msg)
+    if warning:
+        print(f"  [warn] {label}: {warning}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="qwen2-vl-2b")
@@ -354,6 +386,35 @@ def main() -> None:
     p.add_argument("--n-incorrect", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cuda")
+    p.add_argument(
+        "--attention-method",
+        default="contrastive_rollout",
+        choices=["raw", "rollout", "contrastive_rollout"],
+        help=(
+            "How to score visual tokens. raw is the old last-token attention map; "
+            "rollout composes attention through layers; contrastive_rollout subtracts "
+            "a same-image neutral-prompt rollout map to reduce positional priors."
+        ),
+    )
+    p.add_argument(
+        "--baseline-prompt",
+        default="Look at the image. Answer with only the letter A, B, C, or D.",
+        help="Neutral prompt used only by --attention-method contrastive_rollout.",
+    )
+    p.add_argument(
+        "--suppress-border-patches",
+        type=int,
+        default=0,
+        help=(
+            "Visualization ablation: zero this many outer patch rows/columns after "
+            "scoring. Keep 0 for primary results; use 1 only to diagnose border artifacts."
+        ),
+    )
+    p.add_argument(
+        "--no-spatial-normalize",
+        action="store_true",
+        help="Do not normalize image-token scores to sum to one before visualization.",
+    )
     p.add_argument(
         "--dtype",
         default="auto",
@@ -472,11 +533,29 @@ def main() -> None:
         gt_letter_qar = "ABCD"[ex["rationale_label"]]
 
         print(f"[attn-sample] {annot_id}  Q->A  (correct={pick.get('qa_correct')})")
-        res_qa = extract_attention_qwen2vl(model, processor, image, qa_prompt)
-        print(f"  pred_token={res_qa.predicted_token!r}  patch={res_qa.patch_grid_hw}  layers_used={res_qa.num_layers_used}")
+        res_qa = extract_attention_qwen2vl(
+            model,
+            processor,
+            image,
+            qa_prompt,
+            method=args.attention_method,
+            baseline_prompt=args.baseline_prompt,
+            spatial_normalize=not args.no_spatial_normalize,
+            suppress_border_patches=args.suppress_border_patches,
+        )
+        log_attention_diagnostics(f"{annot_id} Q->A", res_qa)
         print(f"[attn-sample] {annot_id}  QA->R (correct={pick.get('r_correct')})")
-        res_qar = extract_attention_qwen2vl(model, processor, image, qar_prompt)
-        print(f"  pred_token={res_qar.predicted_token!r}  patch={res_qar.patch_grid_hw}  layers_used={res_qar.num_layers_used}")
+        res_qar = extract_attention_qwen2vl(
+            model,
+            processor,
+            image,
+            qar_prompt,
+            method=args.attention_method,
+            baseline_prompt=args.baseline_prompt,
+            spatial_normalize=not args.no_spatial_normalize,
+            suppress_border_patches=args.suppress_border_patches,
+        )
+        log_attention_diagnostics(f"{annot_id} QA->R", res_qar)
 
         subtitle_qa = (
             f"{annot_id} | Q->A | pred={pick.get('pred_answer')} truth={gt_letter_qa}"
@@ -505,20 +584,8 @@ def main() -> None:
             "answer_label": pick.get("answer_label"),
             "pred_rationale": pick.get("pred_rationale"),
             "rationale_label": pick.get("rationale_label"),
-            "qa": {
-                "predicted_next_token": res_qa.predicted_token,
-                "patch_grid_hw": list(res_qa.patch_grid_hw),
-                "num_image_tokens": res_qa.num_image_tokens,
-                "num_layers_used": res_qa.num_layers_used,
-                **heatmap_stats(res_qa.heatmap),
-            },
-            "qar": {
-                "predicted_next_token": res_qar.predicted_token,
-                "patch_grid_hw": list(res_qar.patch_grid_hw),
-                "num_image_tokens": res_qar.num_image_tokens,
-                "num_layers_used": res_qar.num_layers_used,
-                **heatmap_stats(res_qar.heatmap),
-            },
+            "qa": attention_record(res_qa),
+            "qar": attention_record(res_qar),
             "panel_files": [str(qa_path.name), str(qar_path.name)],
         })
 
@@ -549,6 +616,14 @@ def main() -> None:
                 "n_incorrect_requested": n_incorrect,
                 "seed": args.seed,
                 "source_details": str(details_path.name),
+                "attention_method": args.attention_method,
+                "baseline_prompt": (
+                    args.baseline_prompt
+                    if args.attention_method == "contrastive_rollout"
+                    else None
+                ),
+                "spatial_normalized": not args.no_spatial_normalize,
+                "suppress_border_patches": args.suppress_border_patches,
                 "samples": sample_records,
             },
             f,

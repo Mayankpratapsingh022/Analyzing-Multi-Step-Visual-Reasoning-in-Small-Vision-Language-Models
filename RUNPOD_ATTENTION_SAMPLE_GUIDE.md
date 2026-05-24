@@ -59,12 +59,29 @@ python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --dtype bf16
 ```
 
+By default the script now uses `--attention-method contrastive_rollout`.
+This replaces the old raw last-token attention visualization with attention
+rollout and subtracts a same-image neutral-prompt map to reduce positional
+or border priors. To reproduce the old behavior for comparison, pass:
+
+```bash
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 10 \
+  --dtype bf16 \
+  --attention-method raw \
+  --out-dir results/attention_sample_raw
+```
+
 Check outputs:
 
 ```bash
 ls -lh results/attention_sample/
 
 python -m json.tool results/attention_sample/sample_metadata.json | head -120
+
+python -m json.tool results/attention_sample/sample_metadata.json | \
+  grep -n "quality_warning\\|border_mass"
 ```
 
 Back up the generated sample:
@@ -225,9 +242,31 @@ python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --dtype bf16
 ```
 
-This command performs the same minimal restore, then runs attention extraction.
+This command performs the same minimal restore, then runs attention extraction
+with `contrastive_rollout`.
 
 If you already ran `--prepare-only`, this command will reuse the existing files and skip already-present downloads.
+
+For debugging only, compare the old raw map and an edge-suppressed ablation:
+
+```bash
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 10 \
+  --dtype bf16 \
+  --attention-method raw \
+  --out-dir results/attention_sample_raw
+
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 10 \
+  --dtype bf16 \
+  --suppress-border-patches 1 \
+  --out-dir results/attention_sample_no_border
+```
+
+Do not use `--suppress-border-patches` for primary results. It is only a
+diagnostic for confirming whether the map is dominated by edge artifacts.
 
 Expected runtime: about 5-10 minutes on a suitable GPU pod after model download/cache.
 

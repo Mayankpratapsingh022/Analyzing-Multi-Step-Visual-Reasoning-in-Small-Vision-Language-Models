@@ -363,6 +363,21 @@ def main() -> None:
             "fp16 can produce NaN attention maps."
         ),
     )
+    p.add_argument(
+        "--min-pixels",
+        type=int,
+        default=None,
+        help="Optional Qwen2-VL processor min_pixels override.",
+    )
+    p.add_argument(
+        "--max-pixels",
+        type=int,
+        default=401408,
+        help=(
+            "Qwen2-VL processor max_pixels override. Lower this if eager attention OOMs. "
+            "Default is 512*784=401408 pixels."
+        ),
+    )
     args = p.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -421,8 +436,17 @@ def main() -> None:
 
     dtype = parse_torch_dtype(args.dtype, args.device)
     dtype_name = "auto" if dtype is None else str(dtype).replace("torch.", "")
-    print(f"[attn-sample] loading {args.model} (eager attention) on {args.device}, dtype={dtype_name}")
-    model, processor = load_qwen2vl_eager(args.hf_id, device=args.device, dtype=dtype)
+    print(
+        f"[attn-sample] loading {args.model} (eager attention) on {args.device}, "
+        f"dtype={dtype_name}, max_pixels={args.max_pixels}"
+    )
+    model, processor = load_qwen2vl_eager(
+        args.hf_id,
+        device=args.device,
+        dtype=dtype,
+        min_pixels=args.min_pixels,
+        max_pixels=args.max_pixels,
+    )
 
     sample_records = []
     panel_paths = []

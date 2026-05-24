@@ -67,6 +67,8 @@ def load_qwen2vl_eager(
     hf_id: str,
     device: str = "cuda",
     dtype: Optional[torch.dtype] = None,
+    min_pixels: Optional[int] = None,
+    max_pixels: Optional[int] = None,
 ) -> tuple[Qwen2VLForConditionalGeneration, "AutoProcessor"]:
     """Load Qwen2-VL with eager attention so `output_attentions=True` works.
 
@@ -80,7 +82,12 @@ def load_qwen2vl_eager(
         else:
             dtype = torch.float32
 
-    processor = AutoProcessor.from_pretrained(hf_id)
+    processor_kwargs = {}
+    if min_pixels is not None:
+        processor_kwargs["min_pixels"] = min_pixels
+    if max_pixels is not None:
+        processor_kwargs["max_pixels"] = max_pixels
+    processor = AutoProcessor.from_pretrained(hf_id, **processor_kwargs)
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         hf_id,
         dtype=dtype,

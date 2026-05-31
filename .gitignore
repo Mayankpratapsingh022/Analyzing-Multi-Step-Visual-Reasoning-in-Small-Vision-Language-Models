@@ -51,13 +51,30 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Results (ignore temp files, CSVs, and JSONs)
-results/**/*.tmp
-results/**/*.pkl
-results/**/*.csv
-results/**/*.json
+# Results / generated artifacts
+results/
+results_*/
+resluts_*/
+resluts*/
+Qwen 2B/
+Qwen 7B/
+*.tar.gz
+*.zip
+*.tmp
+*.pkl
 *.csv
 *.json
+
+# Images / generated figures
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.svg
 
 # Jupyter
 .ipynb_checkpoints/

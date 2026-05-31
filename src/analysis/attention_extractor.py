@@ -25,7 +25,11 @@ from typing import Optional
 import numpy as np
 import torch
 from PIL import Image
-from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+from transformers import (
+    AutoProcessor,
+    BitsAndBytesConfig,
+    Qwen2VLForConditionalGeneration,
+)
 
 
 DEFAULT_LATE_LAYER_FRACTION = 0.75
@@ -110,6 +114,9 @@ def load_qwen2vl_eager(
     dtype: Optional[torch.dtype] = None,
     min_pixels: Optional[int] = None,
     max_pixels: Optional[int] = None,
+    device_map: Optional[str] = None,
+    load_in_4bit: bool = False,
+    load_in_8bit: bool = False,
 ) -> tuple[Qwen2VLForConditionalGeneration, "AutoProcessor"]:
     """Load Qwen2-VL with eager attention so `output_attentions=True` works.
 
@@ -128,13 +135,31 @@ def load_qwen2vl_eager(
         processor_kwargs["min_pixels"] = min_pixels
     if max_pixels is not None:
         processor_kwargs["max_pixels"] = max_pixels
+    if load_in_4bit and load_in_8bit:
+        raise ValueError("Only one of load_in_4bit/load_in_8bit can be enabled.")
+
     processor = AutoProcessor.from_pretrained(hf_id, **processor_kwargs)
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        hf_id,
-        dtype=dtype,
-        attn_implementation="eager",
-    )
-    model.to(device)
+    model_kwargs = {
+        "dtype": dtype,
+        "attn_implementation": "eager",
+    }
+    if load_in_4bit:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+        model_kwargs["device_map"] = device_map or "auto"
+    elif load_in_8bit:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+        model_kwargs["device_map"] = device_map or "auto"
+    elif device_map:
+        model_kwargs["device_map"] = device_map
+
+    model = Qwen2VLForConditionalGeneration.from_pretrained(hf_id, **model_kwargs)
+    if "device_map" not in model_kwargs:
+        model.to(device)
     model.eval()
     return model, processor
 

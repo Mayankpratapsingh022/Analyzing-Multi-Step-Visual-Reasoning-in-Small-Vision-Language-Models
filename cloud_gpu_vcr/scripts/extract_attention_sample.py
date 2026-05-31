@@ -472,6 +472,24 @@ def main() -> None:
         ),
     )
     p.add_argument(
+        "--device-map",
+        default=None,
+        help=(
+            "Optional Hugging Face device_map for large models. Use 'auto' for "
+            "Qwen2-VL-72B on multi-GPU or quantized single-GPU runs."
+        ),
+    )
+    p.add_argument(
+        "--load-in-4bit",
+        action="store_true",
+        help="Load model weights with bitsandbytes NF4 4-bit quantization.",
+    )
+    p.add_argument(
+        "--load-in-8bit",
+        action="store_true",
+        help="Load model weights with bitsandbytes 8-bit quantization.",
+    )
+    p.add_argument(
         "--min-pixels",
         type=int,
         default=None,
@@ -544,9 +562,11 @@ def main() -> None:
 
     dtype = parse_torch_dtype(args.dtype, args.device)
     dtype_name = "auto" if dtype is None else str(dtype).replace("torch.", "")
+    load_mode = "4bit" if args.load_in_4bit else "8bit" if args.load_in_8bit else "full"
     print(
-        f"[attn-sample] loading {args.model} (eager attention) on {args.device}, "
-        f"dtype={dtype_name}, max_pixels={args.max_pixels}"
+        f"[attn-sample] loading {args.hf_id} (eager attention) on {args.device}, "
+        f"dtype={dtype_name}, load_mode={load_mode}, device_map={args.device_map}, "
+        f"max_pixels={args.max_pixels}"
     )
     model, processor = load_qwen2vl_eager(
         args.hf_id,
@@ -554,6 +574,9 @@ def main() -> None:
         dtype=dtype,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
+        device_map=args.device_map,
+        load_in_4bit=args.load_in_4bit,
+        load_in_8bit=args.load_in_8bit,
     )
 
     sample_records = []
@@ -707,12 +730,18 @@ def main() -> None:
         json.dump(
             {
                 "model": args.model,
+                "source_model_for_example_selection": args.model,
                 "hf_id": args.hf_id,
                 "n_examples_requested": args.num_examples,
                 "n_correct_requested": n_correct,
                 "n_incorrect_requested": n_incorrect,
                 "seed": args.seed,
                 "source_details": str(details_path.name),
+                "device": args.device,
+                "device_map": args.device_map,
+                "load_in_4bit": args.load_in_4bit,
+                "load_in_8bit": args.load_in_8bit,
+                "dtype": dtype_name,
                 "attention_method": args.attention_method,
                 "baseline_prompt": (
                     args.baseline_prompt

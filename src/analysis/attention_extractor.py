@@ -78,6 +78,32 @@ class AttentionResult:
     """Quality checks for suspicious artifacts such as border-dominated maps."""
 
 
+@dataclass
+class OcclusionResult:
+    """Grid occlusion-sensitivity output for one image/prompt pair."""
+
+    heatmap: np.ndarray
+    """(H_grid, W_grid) log-probability drop when each image cell is masked."""
+
+    grid_hw: tuple[int, int]
+    """Occlusion grid shape used for the sensitivity scan."""
+
+    predicted_token: str
+    """Top-1 next-token prediction on the unmasked image."""
+
+    target_token_id: int
+    """Token id whose log-probability is measured under occlusion."""
+
+    target_token: str
+    """Decoded token corresponding to `target_token_id`."""
+
+    base_logprob: float
+    """Log-probability of the target token on the unmasked image."""
+
+    diagnostics: dict
+    """Quality checks for suspicious artifacts such as border-dominated maps."""
+
+
 def load_qwen2vl_eager(
     hf_id: str,
     device: str = "cuda",
@@ -141,6 +167,26 @@ def _forward_qwen2vl(
     with torch.no_grad():
         outputs = model(**inputs, output_attentions=True, use_cache=False)
     return inputs, outputs
+
+
+def _forward_qwen2vl_logits(
+    model: Qwen2VLForConditionalGeneration,
+    processor: "AutoProcessor",
+    image: Image.Image,
+    prompt: str,
+) -> torch.Tensor:
+    text = _build_chat_text(processor, image, prompt)
+    inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = model(**inputs, output_attentions=False, use_cache=False)
+    logits = outputs.logits[0, -1].to(torch.float32)
+    if not torch.isfinite(logits).all():
+        raise RuntimeError(
+            "model logits contain non-finite values. Rerun with bf16 or fp32."
+        )
+    return logits
 
 
 def _selected_attention_layers(
@@ -362,6 +408,84 @@ def suppress_heatmap_border(heatmap: np.ndarray, border_width: int) -> np.ndarra
     if np.isfinite(suppressed).any() and float(np.nanmax(suppressed)) > 0:
         return suppressed
     return heatmap
+
+
+def _occlude_cell(
+    image: Image.Image,
+    row: int,
+    col: int,
+    grid_hw: tuple[int, int],
+    fill: str = "mean",
+) -> Image.Image:
+    arr = np.array(image.convert("RGB")).copy()
+    h_img, w_img = arr.shape[:2]
+    rows, cols = grid_hw
+    y0 = int(round(row * h_img / rows))
+    y1 = int(round((row + 1) * h_img / rows))
+    x0 = int(round(col * w_img / cols))
+    x1 = int(round((col + 1) * w_img / cols))
+
+    if fill == "black":
+        value = np.array([0, 0, 0], dtype=np.uint8)
+    elif fill == "gray":
+        value = np.array([127, 127, 127], dtype=np.uint8)
+    elif fill == "mean":
+        value = arr.reshape(-1, 3).mean(axis=0).astype(np.uint8)
+    else:
+        raise ValueError(f"unsupported occlusion fill {fill!r}")
+
+    arr[y0:y1, x0:x1] = value
+    return Image.fromarray(arr)
+
+
+def extract_occlusion_qwen2vl(
+    model: Qwen2VLForConditionalGeneration,
+    processor: "AutoProcessor",
+    image: Image.Image,
+    prompt: str,
+    grid_hw: tuple[int, int] = (7, 7),
+    fill: str = "mean",
+    target_token_id: int | None = None,
+) -> OcclusionResult:
+    """Estimate visual importance by masking image cells and measuring output drop.
+
+    This is slower than attention extraction but more faithful as a sanity
+    check: a cell is important if masking it lowers the model's own next-token
+    log-probability for the unmasked prediction.
+    """
+    if grid_hw[0] <= 0 or grid_hw[1] <= 0:
+        raise ValueError(f"grid_hw must be positive, got {grid_hw}")
+
+    base_logits = _forward_qwen2vl_logits(model, processor, image, prompt)
+    if target_token_id is None:
+        target_token_id = int(base_logits.argmax().item())
+    target_token = processor.tokenizer.decode([target_token_id])
+    predicted_token = processor.tokenizer.decode([int(base_logits.argmax().item())])
+    base_logprob = torch.log_softmax(base_logits, dim=-1)[target_token_id]
+
+    rows, cols = grid_hw
+    heatmap = np.zeros((rows, cols), dtype=np.float32)
+    for r in range(rows):
+        for c in range(cols):
+            masked = _occlude_cell(image, r, c, grid_hw, fill=fill)
+            masked_logits = _forward_qwen2vl_logits(model, processor, masked, prompt)
+            masked_logprob = torch.log_softmax(masked_logits, dim=-1)[target_token_id]
+            drop = float((base_logprob - masked_logprob).item())
+            heatmap[r, c] = max(0.0, drop)
+
+    heatmap = _validate_heatmap(heatmap)
+    return OcclusionResult(
+        heatmap=heatmap,
+        grid_hw=grid_hw,
+        predicted_token=predicted_token,
+        target_token_id=int(target_token_id),
+        target_token=target_token,
+        base_logprob=float(base_logprob.item()),
+        diagnostics={
+            **heatmap_diagnostics(heatmap),
+            "occlusion_fill": fill,
+        },
+    )
 
 
 def extract_attention_qwen2vl(

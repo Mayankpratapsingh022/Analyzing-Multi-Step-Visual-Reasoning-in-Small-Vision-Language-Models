@@ -51,6 +51,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.analysis.attention_extractor import (  # noqa: E402
     extract_attention_qwen2vl,
+    extract_occlusion_qwen2vl,
     load_qwen2vl_eager,
     normalize_heatmap,
     upsample_heatmap_to_image,
@@ -331,6 +332,18 @@ def attention_record(res) -> dict:
     }
 
 
+def occlusion_record(res) -> dict:
+    return {
+        "predicted_next_token": res.predicted_token,
+        "target_token": res.target_token,
+        "target_token_id": res.target_token_id,
+        "base_logprob": res.base_logprob,
+        "grid_hw": list(res.grid_hw),
+        **heatmap_stats(res.heatmap),
+        "diagnostics": res.diagnostics,
+    }
+
+
 def log_attention_diagnostics(label: str, res) -> None:
     diag = res.diagnostics
     warning = diag.get("quality_warning")
@@ -339,6 +352,24 @@ def log_attention_diagnostics(label: str, res) -> None:
     msg = (
         f"  pred_token={res.predicted_token!r}  patch={res.patch_grid_hw} "
         f"layers_used={res.num_layers_used} method={res.method}"
+    )
+    if border_mass is not None:
+        msg += f" border_mass={border_mass:.3f}"
+    if entropy is not None:
+        msg += f" entropy={entropy:.3f}"
+    print(msg)
+    if warning:
+        print(f"  [warn] {label}: {warning}")
+
+
+def log_occlusion_diagnostics(label: str, res) -> None:
+    diag = res.diagnostics
+    warning = diag.get("quality_warning")
+    border_mass = diag.get("border_mass")
+    entropy = diag.get("normalized_entropy")
+    msg = (
+        f"  occlusion target={res.target_token!r} grid={res.grid_hw} "
+        f"base_logprob={res.base_logprob:.3f}"
     )
     if border_mass is not None:
         msg += f" border_mass={border_mass:.3f}"
@@ -414,6 +445,22 @@ def main() -> None:
         "--no-spatial-normalize",
         action="store_true",
         help="Do not normalize image-token scores to sum to one before visualization.",
+    )
+    p.add_argument(
+        "--occlusion-grid",
+        type=int,
+        default=0,
+        help=(
+            "Optional causal sanity-check map. If >0, mask an NxN image grid and "
+            "measure the drop in the model's predicted-token log-probability. "
+            "Use 5 for quick checks, 7 for better resolution. This is much slower."
+        ),
+    )
+    p.add_argument(
+        "--occlusion-fill",
+        default="mean",
+        choices=["mean", "gray", "black"],
+        help="Fill value for occluded cells when --occlusion-grid is enabled.",
     )
     p.add_argument(
         "--dtype",
@@ -544,6 +591,18 @@ def main() -> None:
             suppress_border_patches=args.suppress_border_patches,
         )
         log_attention_diagnostics(f"{annot_id} Q->A", res_qa)
+        occ_qa = None
+        if args.occlusion_grid > 0:
+            occ_qa = extract_occlusion_qwen2vl(
+                model,
+                processor,
+                image,
+                qa_prompt,
+                grid_hw=(args.occlusion_grid, args.occlusion_grid),
+                fill=args.occlusion_fill,
+            )
+            log_occlusion_diagnostics(f"{annot_id} Q->A occlusion", occ_qa)
+
         print(f"[attn-sample] {annot_id}  QA->R (correct={pick.get('r_correct')})")
         res_qar = extract_attention_qwen2vl(
             model,
@@ -556,6 +615,17 @@ def main() -> None:
             suppress_border_patches=args.suppress_border_patches,
         )
         log_attention_diagnostics(f"{annot_id} QA->R", res_qar)
+        occ_qar = None
+        if args.occlusion_grid > 0:
+            occ_qar = extract_occlusion_qwen2vl(
+                model,
+                processor,
+                image,
+                qar_prompt,
+                grid_hw=(args.occlusion_grid, args.occlusion_grid),
+                fill=args.occlusion_fill,
+            )
+            log_occlusion_diagnostics(f"{annot_id} QA->R occlusion", occ_qar)
 
         subtitle_qa = (
             f"{annot_id} | Q->A | pred={pick.get('pred_answer')} truth={gt_letter_qa}"
@@ -576,7 +646,29 @@ def main() -> None:
         plt.close(fig)
         panel_paths.append((qa_path, qar_path))
 
-        sample_records.append({
+        occlusion_files = []
+        if occ_qa is not None and occ_qar is not None:
+            qa_occ_path = out_dir / f"{annot_id}_qa_occlusion.png"
+            qar_occ_path = out_dir / f"{annot_id}_qar_occlusion.png"
+            fig = render_panel(
+                image,
+                occ_qa.heatmap,
+                ex["question"],
+                subtitle_qa + " | occlusion",
+            )
+            fig.savefig(qa_occ_path, dpi=110, bbox_inches="tight")
+            plt.close(fig)
+            fig = render_panel(
+                image,
+                occ_qar.heatmap,
+                ex["question"],
+                subtitle_qar + " | occlusion",
+            )
+            fig.savefig(qar_occ_path, dpi=110, bbox_inches="tight")
+            plt.close(fig)
+            occlusion_files = [str(qa_occ_path.name), str(qar_occ_path.name)]
+
+        record = {
             "annot_id": annot_id,
             "qa_correct": pick.get("qa_correct"),
             "r_correct": pick.get("r_correct"),
@@ -587,7 +679,12 @@ def main() -> None:
             "qa": attention_record(res_qa),
             "qar": attention_record(res_qar),
             "panel_files": [str(qa_path.name), str(qar_path.name)],
-        })
+        }
+        if occ_qa is not None and occ_qar is not None:
+            record["qa_occlusion"] = occlusion_record(occ_qa)
+            record["qar_occlusion"] = occlusion_record(occ_qar)
+            record["occlusion_panel_files"] = occlusion_files
+        sample_records.append(record)
 
     grid_path = out_dir / "attention_sample.png"
     n_rows = len(panel_paths)
@@ -624,6 +721,8 @@ def main() -> None:
                 ),
                 "spatial_normalized": not args.no_spatial_normalize,
                 "suppress_border_patches": args.suppress_border_patches,
+                "occlusion_grid": args.occlusion_grid,
+                "occlusion_fill": args.occlusion_fill if args.occlusion_grid > 0 else None,
                 "samples": sample_records,
             },
             f,

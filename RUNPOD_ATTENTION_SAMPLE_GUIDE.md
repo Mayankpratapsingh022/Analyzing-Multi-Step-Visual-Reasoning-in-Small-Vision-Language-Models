@@ -1,23 +1,30 @@
-# RunPod Guide: Qwen2-VL Attention Sample
+# RunPod Guide: Qwen2-VL Attention And Occlusion Checks
 
-This guide is for downloading a small selected VCR subset and running the 10-example attention-extraction sample for RQ3, not for rerunning Wave 2.
+This guide is for the current RQ3 workflow:
 
-Goal: use `cloud_gpu_vcr/scripts/extract_attention_sample.py` to fetch only the selected examples, then generate `results/attention_sample/attention_sample.png` plus per-example panels and metadata.
+1. Restore only the selected VCR validation examples from the HF mirror.
+2. Generate Qwen2-VL attention maps for Q→A and QA→R prompts.
+3. Compare Qwen2-VL-2B and Qwen2-VL-7B on the same selected examples.
+4. Optionally run occlusion-sensitivity maps as a more causal sanity check.
+5. Send/backup the generated artifacts.
 
-## 0. Pod Requirements
+Do not rerun Wave 2 full validation for this task.
 
-Use a RunPod GPU instance with:
+## 0. Requirements
 
-- CUDA-capable GPU
-- At least 6 GB VRAM for `qwen2-vl-2b`
-- Enough disk for the model cache and the selected VCR examples
-- Hugging Face access to private dataset `JaydeepR/vcr-mirror`
+Use a RunPod CUDA image with Python 3.10+ and enough VRAM:
 
-Recommended pod image: a PyTorch CUDA image with Python 3.10+.
+- Qwen2-VL-2B attention: at least 8 GB VRAM recommended.
+- Qwen2-VL-7B attention: at least 24 GB VRAM recommended.
+- Qwen2-VL-7B + occlusion: use a larger GPU if possible because it performs many forward passes.
 
-## Quick Copy-Paste Commands
+You need Hugging Face access to the private dataset:
 
-Use this sequence on a fresh RunPod instance after opening a terminal.
+```text
+JaydeepR/vcr-mirror
+```
+
+## 1. Fresh Pod Setup
 
 ```bash
 cd /workspace
@@ -27,7 +34,12 @@ git clone https://github.com/Mayankpratapsingh022/Analyzing-Multi-Step-Visual-Re
 cd Analyzing-Multi-Step-Visual-Reasoning-in-Small-Vision-Language-Models
 
 git checkout feature/mmmu-mathvista-baselines
+git pull origin feature/mmmu-mathvista-baselines
+```
 
+Set environment variables:
+
+```bash
 export HF_TOKEN=<paste-your-huggingface-token>
 export VCR_DIR=/workspace/data/vcr
 export HF_HOME=/workspace/.cache/huggingface
@@ -36,185 +48,49 @@ export TRANSFORMERS_CACHE=/workspace/.cache/huggingface/transformers
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export USE_WANDB=0
 
-bash cloud_gpu_vcr/scripts/bootstrap_cloud.sh
-
 mkdir -p /workspace/data/vcr_raw /workspace/data/vcr results
 ```
 
-Download 100 selected examples only, without running attention extraction:
+Bootstrap dependencies:
 
 ```bash
-python cloud_gpu_vcr/scripts/extract_attention_sample.py \
-  --prepare-from-hf \
-  --prepare-only \
-  --num-examples 100
-```
-
-Run the mentor-requested 10-example attention sample:
-
-```bash
-python cloud_gpu_vcr/scripts/extract_attention_sample.py \
-  --prepare-from-hf \
-  --num-examples 10 \
-  --dtype bf16
-```
-
-By default the script now uses `--attention-method contrastive_rollout`.
-This replaces the old raw last-token attention visualization with attention
-rollout and subtracts a same-image neutral-prompt map to reduce positional
-or border priors. To reproduce the old behavior for comparison, pass:
-
-```bash
-python cloud_gpu_vcr/scripts/extract_attention_sample.py \
-  --prepare-from-hf \
-  --num-examples 10 \
-  --dtype bf16 \
-  --attention-method raw \
-  --out-dir results/attention_sample_raw
-```
-
-Check outputs:
-
-```bash
-ls -lh results/attention_sample/
-
-python -m json.tool results/attention_sample/sample_metadata.json | head -120
-
-python -m json.tool results/attention_sample/sample_metadata.json | \
-  grep -n "quality_warning\\|border_mass"
-```
-
-Back up the generated sample:
-
-```bash
-hf upload JaydeepR/vcr-mirror \
-  results/attention_sample/ \
-  wave2_latest/results/attention_sample/ \
-  --repo-type dataset
-```
-
-## 1. Clone The Repo
-
-```bash
-cd /workspace
-
-git clone https://github.com/Mayankpratapsingh022/Analyzing-Multi-Step-Visual-Reasoning-in-Small-Vision-Language-Models.git
-
-cd Analyzing-Multi-Step-Visual-Reasoning-in-Small-Vision-Language-Models
-
-git checkout feature/mmmu-mathvista-baselines
+bash cloud_gpu_vcr/scripts/bootstrap_cloud.sh
 ```
 
 Optional sanity check:
 
 ```bash
 git log -1 --oneline
+python -m py_compile src/analysis/attention_extractor.py cloud_gpu_vcr/scripts/extract_attention_sample.py
 ```
 
-Expected branch:
+## 2. Optional Prepare-Only Download
 
-```text
-feature/mmmu-mathvista-baselines
-```
-
-## 2. Configure Environment Variables
-
-Set `HF_TOKEN` to a token that can access the private Hugging Face dataset.
-
-```bash
-export HF_TOKEN=<paste-your-huggingface-token>
-
-export VCR_DIR=/workspace/data/vcr
-export HF_HOME=/workspace/.cache/huggingface
-export HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
-export TRANSFORMERS_CACHE=/workspace/.cache/huggingface/transformers
-
-export USE_WANDB=0
-```
-
-Important HF rate-limit setting:
-
-```bash
-export HF_HUB_ENABLE_HF_TRANSFER=0
-```
-
-This avoids the known rate-limit issue when downloading many small files from the raw-file VCR mirror.
-
-Alternative login flow:
-
-```bash
-hf auth login
-```
-
-## 3. Bootstrap The Pod
-
-Run the project bootstrap script once:
-
-```bash
-bash cloud_gpu_vcr/scripts/bootstrap_cloud.sh
-```
-
-This installs the runtime dependencies, including PyTorch, Transformers, Hugging Face tooling, and plotting libraries.
-
-## 4. Minimal VCR Restore From Hugging Face
-
-Do not redownload VCR from the original source. Also do not download the full HF mirror.
-
-The attention sample script now supports a minimal restore mode:
-
-```bash
-mkdir -p /workspace/data/vcr_raw /workspace/data/vcr results
-```
-
-The Hugging Face mirror structure used by the script is:
-
-```text
-vcr1annots/val.jsonl
-vcr1images/vcr1images/<movie_or_scene_dir>/<image>.jpg
-vcr1images/vcr1images/<movie_or_scene_dir>/<metadata>.json
-wave2_latest/results/qwen2-vl-2b_*details*.json
-```
-
-The script downloads only:
+This downloads only:
 
 - `vcr1annots/val.jsonl`
-- the matching `qwen2-vl-2b` Wave-2 details JSON
-- `img_fn` and `metadata_fn` files for the selected examples
+- selected images and metadata JSON files
+- matching Wave-2 details JSON used to pick examples
 
-Use `--num-examples` to control the total number of selected examples. The script splits the count evenly across correct and incorrect Q->A outcomes.
-
-Examples:
+Run this if you want to verify HF access before loading any model:
 
 ```bash
-# 10 total examples: 5 correct + 5 incorrect
 python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --prepare-from-hf \
   --prepare-only \
   --num-examples 10
-
-# 50 total examples: 25 correct + 25 incorrect
-python cloud_gpu_vcr/scripts/extract_attention_sample.py \
-  --prepare-from-hf \
-  --prepare-only \
-  --num-examples 50
-
-# 100 total examples: 50 correct + 50 incorrect
-python cloud_gpu_vcr/scripts/extract_attention_sample.py \
-  --prepare-from-hf \
-  --prepare-only \
-  --num-examples 100
 ```
 
-Optional preflight to fetch only those local files without loading the model:
+For a larger future sample:
 
 ```bash
 python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --prepare-from-hf \
   --prepare-only \
-  --num-examples 100
+  --num-examples 50
 ```
 
-Expected local layout after prepare:
+Expected local files:
 
 ```text
 /workspace/data/vcr/val.jsonl
@@ -223,80 +99,182 @@ Expected local layout after prepare:
 results/qwen2-vl-2b_*_details.json
 ```
 
-Quick check:
+Check:
 
 ```bash
+ls -lh results/*qwen2-vl-2b*details*.json
 find /workspace/data/vcr/vcr1images -type f | wc -l
-
-ls results/*qwen2-vl-2b*details*.json
 ```
 
-Expected selected asset count is usually up to `2 * num_examples`: one image and one metadata JSON per selected example, with fewer if examples share files.
+## 3. Main 10-Example Qwen2-VL-2B Attention Run
 
-## 5. Run The Attention Sample
+This is the default mentor-review sample for the 2B model.
 
 ```bash
+rm -rf results/attention_sample_qwen2b
+
 python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --prepare-from-hf \
   --num-examples 10 \
+  --model qwen2-vl-2b \
+  --hf-id Qwen/Qwen2-VL-2B-Instruct \
+  --out-dir results/attention_sample_qwen2b \
   --dtype bf16
 ```
 
-This command performs the same minimal restore, then runs attention extraction
-with `contrastive_rollout`.
+The default attention method is:
 
-If you already ran `--prepare-only`, this command will reuse the existing files and skip already-present downloads.
+```text
+contrastive_rollout
+```
 
-For debugging only, compare the old raw map and an edge-suppressed ablation:
+It performs late-layer attention rollout and subtracts a neutral same-image prompt map to reduce positional/border priors.
+
+## 4. Matching 10-Example Qwen2-VL-7B Attention Run
+
+This uses the same selected examples as the 2B run, but loads Qwen2-VL-7B.
+
+```bash
+rm -rf results/attention_sample_qwen7b
+
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 10 \
+  --model qwen2-vl-2b \
+  --hf-id Qwen/Qwen2-VL-7B-Instruct \
+  --out-dir results/attention_sample_qwen7b \
+  --dtype bf16
+```
+
+Why `--model qwen2-vl-2b` here:
+
+- `--model` selects the existing Wave-2 details JSON used to pick examples.
+- `--hf-id` selects the actual model loaded for attention extraction.
+- We keep `--model qwen2-vl-2b` so the 2B and 7B attention runs use the same 10 examples.
+
+## 5. Larger 50-Example Comparison
+
+Run this after the 10-example sample works. This is better for the mentor’s question about Q→A vs QA→R focus/scatter.
+
+Qwen2-VL-2B:
+
+```bash
+rm -rf results/attention_sample_qwen2b_n50
+
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 50 \
+  --model qwen2-vl-2b \
+  --hf-id Qwen/Qwen2-VL-2B-Instruct \
+  --out-dir results/attention_sample_qwen2b_n50 \
+  --dtype bf16
+```
+
+Qwen2-VL-7B:
+
+```bash
+rm -rf results/attention_sample_qwen7b_n50
+
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 50 \
+  --model qwen2-vl-2b \
+  --hf-id Qwen/Qwen2-VL-7B-Instruct \
+  --out-dir results/attention_sample_qwen7b_n50 \
+  --dtype bf16
+```
+
+## 6. Occlusion Sanity Checks
+
+Attention weights are not guaranteed causal explanations. Use occlusion checks on a small subset to see whether masking high-attention regions actually changes the model’s predicted letter probability.
+
+Start small. A 5x5 grid with 4 examples runs 25 occlusion forwards per prompt, plus the normal attention forwards.
+
+Qwen2-VL-2B occlusion check:
+
+```bash
+rm -rf results/attention_occlusion_check_qwen2b
+
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 4 \
+  --model qwen2-vl-2b \
+  --hf-id Qwen/Qwen2-VL-2B-Instruct \
+  --out-dir results/attention_occlusion_check_qwen2b \
+  --dtype bf16 \
+  --occlusion-grid 5
+```
+
+Qwen2-VL-7B occlusion check:
+
+```bash
+rm -rf results/attention_occlusion_check_qwen7b
+
+python cloud_gpu_vcr/scripts/extract_attention_sample.py \
+  --prepare-from-hf \
+  --num-examples 4 \
+  --model qwen2-vl-2b \
+  --hf-id Qwen/Qwen2-VL-7B-Instruct \
+  --out-dir results/attention_occlusion_check_qwen7b \
+  --dtype bf16 \
+  --occlusion-grid 5
+```
+
+Expected extra files when occlusion is enabled:
+
+```text
+<annot_id>_qa_occlusion.png
+<annot_id>_qar_occlusion.png
+```
+
+Use these as validation:
+
+- If attention and occlusion highlight similar regions, the attention map is more credible.
+- If attention highlights a region but occlusion shows no prediction drop there, treat the attention map as weak evidence.
+- If both maps are scattered, report that the model’s visual evidence is not spatially focused for that prompt.
+
+## 7. Raw And Diagnostic Ablations
+
+Only run these for debugging. Do not use them as primary mentor results.
+
+Old raw last-token attention:
 
 ```bash
 python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --prepare-from-hf \
   --num-examples 10 \
+  --model qwen2-vl-2b \
+  --hf-id Qwen/Qwen2-VL-2B-Instruct \
+  --out-dir results/attention_sample_raw_qwen2b \
   --dtype bf16 \
-  --attention-method raw \
-  --out-dir results/attention_sample_raw
-
-python cloud_gpu_vcr/scripts/extract_attention_sample.py \
-  --prepare-from-hf \
-  --num-examples 10 \
-  --dtype bf16 \
-  --suppress-border-patches 1 \
-  --out-dir results/attention_sample_no_border
+  --attention-method raw
 ```
 
-Do not use `--suppress-border-patches` for primary results. It is only a
-diagnostic for confirming whether the map is dominated by edge artifacts.
-
-Expected runtime: about 5-10 minutes on a suitable GPU pod after model download/cache.
-
-For mentor review, keep this at `--num-examples 10`. For only downloading more examples without running attention extraction, use `--prepare-only --num-examples 100`.
-
-The extractor uses eager attention because flash/SDPA kernels do not expose attention probabilities.
-
-Equivalent explicit command:
+Border-suppressed ablation:
 
 ```bash
 python cloud_gpu_vcr/scripts/extract_attention_sample.py \
   --prepare-from-hf \
-  --hf-dataset-id JaydeepR/vcr-mirror \
-  --hf-raw-dir /workspace/data/vcr_raw \
-  --vcr-dir /workspace/data/vcr \
-  --results-dir results \
   --num-examples 10 \
+  --model qwen2-vl-2b \
+  --hf-id Qwen/Qwen2-VL-2B-Instruct \
+  --out-dir results/attention_sample_no_border_qwen2b \
   --dtype bf16 \
-  --seed 42
+  --suppress-border-patches 1
 ```
 
-## 6. Verify Outputs
+Do not use `--suppress-border-patches` for primary results. It is only for diagnosing border artifacts.
 
-Check generated files:
+## 8. Verify Outputs
+
+Check files:
 
 ```bash
-ls -lh results/attention_sample/
+ls -lh results/attention_sample_qwen2b/
+ls -lh results/attention_sample_qwen7b/
 ```
 
-Expected outputs:
+Expected attention files:
 
 ```text
 attention_sample.png
@@ -305,112 +283,148 @@ sample_metadata.json
 <annot_id>_qar.png
 ```
 
-Quick metadata inspection:
+Check metadata:
 
 ```bash
-python -m json.tool results/attention_sample/sample_metadata.json | head -120
+python -m json.tool results/attention_sample_qwen2b/sample_metadata.json | head -120
+python -m json.tool results/attention_sample_qwen7b/sample_metadata.json | head -120
 ```
 
-Recommended visual checks before sending to the mentor:
+Check warnings and border metrics:
 
-- `attention_sample.png` exists and is non-empty.
-- The grid contains the requested number of examples.
-- Examples are split evenly across correct and incorrect cases.
-- `sample_metadata.json` reports `heatmap_finite_fraction: 1.0` for every QA and QA-R map.
-- `heatmap_min` and `heatmap_max` are finite numbers, not `NaN`.
-- Both Q->A and QA->R panels are present where expected.
-- Heatmaps align with plausible image regions rather than blank, constant, or uniform-purple maps.
-- No obvious image-path failures or missing-image placeholders appear.
+```bash
+python -m json.tool results/attention_sample_qwen2b/sample_metadata.json | \
+  grep -n "quality_warning\\|border_mass\\|normalized_entropy"
 
-## 7. Back Up The Sample To Hugging Face
+python -m json.tool results/attention_sample_qwen7b/sample_metadata.json | \
+  grep -n "quality_warning\\|border_mass\\|normalized_entropy"
+```
 
-After verifying the sample looks reasonable:
+Quick numeric summary:
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+for name, path in {
+    "qwen2b": Path("results/attention_sample_qwen2b/sample_metadata.json"),
+    "qwen7b": Path("results/attention_sample_qwen7b/sample_metadata.json"),
+}.items():
+    if not path.exists():
+        print(f"{name}: missing {path}")
+        continue
+    data = json.loads(path.read_text())
+    print(f"== {name} ==")
+    print("hf_id:", data.get("hf_id"))
+    print("method:", data.get("attention_method"))
+    for phase in ["qa", "qar"]:
+        rows = [s[phase]["diagnostics"] for s in data["samples"]]
+        entropy = [r["normalized_entropy"] for r in rows if r.get("normalized_entropy") is not None]
+        border = [r["border_mass"] for r in rows if r.get("border_mass") is not None]
+        warnings = [r.get("quality_warning") for r in rows if r.get("quality_warning")]
+        print(
+            f"{phase}: n={len(rows)} "
+            f"entropy_mean={sum(entropy)/len(entropy):.3f} "
+            f"border_mean={sum(border)/len(border):.3f} "
+            f"warnings={len(warnings)}"
+        )
+    print()
+PY
+```
+
+Visual checks:
+
+- Open `attention_sample.png`.
+- Confirm Q→A and QA→R panels are both present.
+- Confirm heatmaps are not blank, constant, or all pinned to one corner.
+- Compare `quality_warning` entries against the visual grid.
+- For occlusion runs, compare `*_occlusion.png` against the corresponding attention map.
+
+## 9. Send Results Back To Local Machine
+
+Using `runpodctl`, send each folder after verifying it is non-empty:
+
+```bash
+du -sh results/attention_sample_qwen2b results/attention_sample_qwen7b
+
+runpodctl send results/attention_sample_qwen2b
+runpodctl send results/attention_sample_qwen7b
+```
+
+For occlusion checks:
+
+```bash
+du -sh results/attention_occlusion_check_qwen2b results/attention_occlusion_check_qwen7b
+
+runpodctl send results/attention_occlusion_check_qwen2b
+runpodctl send results/attention_occlusion_check_qwen7b
+```
+
+On your local machine, receive with the code printed by RunPod:
+
+```bash
+runpodctl receive <code>
+```
+
+## 10. Back Up To Hugging Face
+
+Upload the verified outputs:
 
 ```bash
 hf upload JaydeepR/vcr-mirror \
-  results/attention_sample/ \
-  wave2_latest/results/attention_sample/ \
+  results/attention_sample_qwen2b/ \
+  wave2_latest/results/attention_sample_qwen2b/ \
+  --repo-type dataset
+
+hf upload JaydeepR/vcr-mirror \
+  results/attention_sample_qwen7b/ \
+  wave2_latest/results/attention_sample_qwen7b/ \
   --repo-type dataset
 ```
 
-Before terminating the pod, optionally run the broader backup script:
+For occlusion checks:
+
+```bash
+hf upload JaydeepR/vcr-mirror \
+  results/attention_occlusion_check_qwen2b/ \
+  wave2_latest/results/attention_occlusion_check_qwen2b/ \
+  --repo-type dataset
+
+hf upload JaydeepR/vcr-mirror \
+  results/attention_occlusion_check_qwen7b/ \
+  wave2_latest/results/attention_occlusion_check_qwen7b/ \
+  --repo-type dataset
+```
+
+Before terminating the pod:
 
 ```bash
 bash cloud_gpu_vcr/scripts/backup_to_hf.sh
 ```
 
-## 8. What Not To Run
+## 11. What To Report
 
-Do not rerun Wave 2:
+For the mentor PDF, do not send raw results only. Summarize:
+
+- VCR full-validation accuracies from Wave 2.
+- Attention method: late-layer visual-token `contrastive_rollout`.
+- Q→A vs QA→R focus/scatter metrics:
+  - `normalized_entropy`
+  - `border_mass`
+  - `quality_warning` count
+- Correct vs failed example comparison.
+- 2B vs 7B comparison.
+- Occlusion sanity-check agreement/disagreement with attention.
+- Caveat: decoder-only self-attention is a visual-token attribution proxy, not definitive causal evidence.
+
+## 12. What Not To Run
+
+Do not rerun Wave 2 full validation:
 
 ```bash
-# Do not run:
+# Do not run for this task:
 # bash cloud_gpu_vcr/scripts/run_wave2_sweep.sh
 ```
 
-Do not use Hugging Face streaming for this dataset mirror. The mirror is a raw folder dump, not a parquet HF dataset.
-
-Do not run the old full mirror download for this sample:
-
-```bash
-# Do not run for the 10-example attention sample:
-# hf download JaydeepR/vcr-mirror --repo-type dataset --local-dir /workspace/data/vcr_raw
-```
-
-## 9. Troubleshooting
-
-If the run pauses for many minutes at this line:
-
-```text
-[attn-sample] downloading details JSON pattern from HF: wave2_latest/results/qwen2-vl-2b_*details*.json
-```
-
-stop it with `Ctrl+C`, pull the latest code, and rerun:
-
-```bash
-git pull
-
-python cloud_gpu_vcr/scripts/extract_attention_sample.py \
-  --prepare-from-hf \
-  --num-examples 10
-```
-
-That older message came from a slower implementation that used `snapshot_download` and could spend a long time scanning the large raw-file HF dataset. The newer script lists only `wave2_latest/results/` and downloads the matching details JSON directly.
-
-If the generated attention panels look like a uniform purple/blue tint and the metadata contains `NaN` heatmap values, the run is invalid. Pull the latest code and rerun with bf16 eager attention:
-
-```bash
-git pull
-
-rm -rf results/attention_sample
-
-python cloud_gpu_vcr/scripts/extract_attention_sample.py \
-  --prepare-from-hf \
-  --num-examples 10 \
-  --dtype bf16
-```
-
-On GPUs without bf16 support, use `--dtype fp32` instead, but expect higher VRAM use.
-
-## 10. Next Deliverable After The Sample
-
-After the sample is generated and visually checked, prepare a failure-attribution criteria spec for mentor sign-off.
-
-Suggested output file:
-
-```text
-docs/failure_attribution_criteria.md
-```
-
-The spec should define:
-
-- Visual-recognition failure
-- Logical-reasoning failure
-- Parse failure
-- Spatial failure
-- Counting failure
-- Commonsense failure
-- Rationale-only failure
-- Decision rules using Attention Object Overlap thresholds
-- Manual-review protocol for ambiguous cases
-- Coding sheet fields for review
+Do not bulk download the full VCR mirror unless necessary. The script’s `--prepare-from-hf` mode downloads only the needed files.

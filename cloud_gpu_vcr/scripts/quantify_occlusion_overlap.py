@@ -170,6 +170,41 @@ def require_details_file(results_dir: Path, model_name: str, num_examples: int) 
     return details_path
 
 
+def download_explicit_hf_details_file(
+    *,
+    hf_details_path: str,
+    results_dir: Path,
+    hf_dataset_id: str,
+    hf_raw_dir: Path,
+    token: str | None,
+) -> Path:
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise SystemExit(
+            "huggingface_hub is required for --hf-details-path. "
+            "Run cloud_gpu_vcr/scripts/bootstrap_cloud.sh first."
+        ) from exc
+
+    print(f"[occ-overlap] downloading explicit HF details file: {hf_details_path}")
+    downloaded = Path(
+        hf_hub_download(
+            repo_id=hf_dataset_id,
+            repo_type="dataset",
+            filename=hf_details_path,
+            local_dir=str(hf_raw_dir),
+            token=token,
+        )
+    )
+    results_dir.mkdir(parents=True, exist_ok=True)
+    target = results_dir / downloaded.name
+    if not target.exists():
+        import shutil
+
+        shutil.copy2(downloaded, target)
+    return target
+
+
 def parse_torch_dtype(name: str, device: str):
     import torch
 
@@ -803,6 +838,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hf-dataset-id", default=DEFAULT_HF_DATASET_ID)
     p.add_argument("--hf-raw-dir", default="/workspace/data/vcr_raw")
     p.add_argument("--hf-token", default=None, help="Optional HF token. Defaults to HF_TOKEN.")
+    p.add_argument(
+        "--details-file",
+        default=None,
+        help=(
+            "Use this local details JSON directly for annot_id selection and correctness labels. "
+            "Overrides --model/--full-val-n details discovery."
+        ),
+    )
+    p.add_argument(
+        "--hf-details-path",
+        default=None,
+        help=(
+            "Download and use this exact details JSON path from --hf-dataset-id. "
+            "Example: wave2_latest/results/qwen2-vl-7b_vcr_20260517_151410_details.json"
+        ),
+    )
     p.add_argument("--prepare-from-hf", action="store_true")
     p.add_argument(
         "--prepare-only",
@@ -848,6 +899,8 @@ def main() -> None:
     args = parse_args()
     if args.prepare_only and not args.prepare_from_hf:
         raise SystemExit("--prepare-only requires --prepare-from-hf")
+    if args.details_file and args.hf_details_path:
+        raise SystemExit("Use only one of --details-file or --hf-details-path")
     if args.occlusion_grid <= 0:
         raise SystemExit("--occlusion-grid must be positive for this metric")
     if not (0.0 < args.active_fraction <= 1.0):
@@ -862,8 +915,21 @@ def main() -> None:
     hf_raw_dir = Path(args.hf_raw_dir)
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
 
-    print(f"[occ-overlap] selecting examples from {args.model} details JSON")
-    if args.prepare_from_hf:
+    print(f"[occ-overlap] selecting examples from details JSON")
+    prepare_picked_vcr_files_from_hf = None
+    if args.details_file:
+        details_path = Path(args.details_file)
+        if not details_path.exists():
+            raise SystemExit(f"--details-file does not exist: {details_path}")
+    elif args.hf_details_path:
+        details_path = download_explicit_hf_details_file(
+            hf_details_path=args.hf_details_path,
+            results_dir=results_dir,
+            hf_dataset_id=args.hf_dataset_id,
+            hf_raw_dir=hf_raw_dir,
+            token=hf_token,
+        )
+    elif args.prepare_from_hf:
         from extract_attention_sample import (
             ensure_details_from_hf,
             prepare_picked_vcr_files_from_hf,
@@ -880,6 +946,12 @@ def main() -> None:
     else:
         details_path = require_details_file(results_dir, args.model, args.full_val_n)
     details = load_json(details_path)
+    details_model = details.get("model_name")
+    details_n = details.get("num_examples")
+    print(
+        f"[occ-overlap] source details: {details_path} "
+        f"(model_name={details_model}, num_examples={details_n})"
+    )
     selected = pick_examples(details, args.num_examples, args.seed, args.selection_strategy)
     selected_annot_ids = [ex["annot_id"] for ex in selected]
     print(
@@ -910,6 +982,9 @@ def main() -> None:
     write_json(out_dir / "selected_annot_ids.json", selected_payload)
 
     if args.prepare_from_hf:
+        if prepare_picked_vcr_files_from_hf is None:
+            from extract_attention_sample import prepare_picked_vcr_files_from_hf
+
         prepare_picked_vcr_files_from_hf(
             picks=selected,
             vcr_dir=vcr_dir,

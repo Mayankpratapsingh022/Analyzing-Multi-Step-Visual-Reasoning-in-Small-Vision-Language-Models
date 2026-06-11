@@ -65,6 +65,15 @@ Qwen 7B/
 *.csv
 *.json
 
+# Reports / LaTeX generated artifacts
+reports/*.pdf
+reports/*.aux
+reports/*.out
+reports/*.toc
+reports/*.fls
+reports/*.fdb_latexmk
+reports/*.synctex.gz
+
 # Images / generated figures
 *.png
 *.jpg
